@@ -73,7 +73,29 @@ class ADBTransport(Transport):
         if action in ("shell", "execute", "run_command"):
             cmd = params.get("command", "")
             cmd = f"[ -f /data/local/tmp/.cua_env ] && . /data/local/tmp/.cua_env; {cmd}"
+            user = params.get("user")
+            if user == "root":
+                import shlex
+                cmd = f"su 0 -c {shlex.quote(cmd)}"
             result = await self._adb_cmd_async("shell", cmd)
+            return {
+                "stdout": result.stdout.decode(errors="replace"),
+                "stderr": result.stderr.decode(errors="replace"),
+                "returncode": result.returncode,
+            }
+        if action == "adb_root":
+            # Restart adbd as root — required before adb_remount on API 29+
+            import asyncio
+            result = await self._adb_cmd_async("root", timeout=15)
+            await asyncio.sleep(2)  # wait for adbd to restart
+            return {
+                "stdout": result.stdout.decode(errors="replace"),
+                "stderr": result.stderr.decode(errors="replace"),
+                "returncode": result.returncode,
+            }
+        if action == "adb_remount":
+            # Remount system partition as writable — requires -writable-system emulator flag
+            result = await self._adb_cmd_async("remount", timeout=15)
             return {
                 "stdout": result.stdout.decode(errors="replace"),
                 "stderr": result.stderr.decode(errors="replace"),

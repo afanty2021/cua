@@ -51,11 +51,12 @@ if TYPE_CHECKING:
 # ── mitmproxy addon templates ────────────────────────────────────────────────
 
 _FLOW_LOG_ADDON = """\
-import json, time
+import json, os, time
 from mitmproxy import http
 
 _FLOWS: list[dict] = []
 _MAX_BODY = 512 * 1024  # 512 KB — skip binary / large responses
+_FLOWS_PATH = os.environ.get("MITM_FLOWS_PATH", "/tmp/mitm_flows.json")
 
 def _body_text(flow):
     if flow.response is None:
@@ -78,12 +79,12 @@ def response(flow: http.HTTPFlow) -> None:
         "timestamp": time.time(),
     }
     _FLOWS.append(entry)
-    with open("/tmp/mitm_flows.json", "w") as fh:
+    with open(_FLOWS_PATH, "w") as fh:
         json.dump(_FLOWS, fh)
 """
 
 _REPLACE_ADDON_TEMPLATE = """\
-import re, json, time
+import re, json, os, time
 from mitmproxy import http, ctx
 
 PATTERN   = {pattern!r}
@@ -92,6 +93,7 @@ REPLACE   = {replace!r}
 
 _FLOWS: list[dict] = []
 _MAX_BODY = 512 * 1024  # 512 KB
+_FLOWS_PATH = os.environ.get("MITM_FLOWS_PATH", "/tmp/mitm_flows.json")
 
 def _is_text(flow):
     ct = flow.response.headers.get("content-type", "")
@@ -120,7 +122,7 @@ def response(flow: http.HTTPFlow) -> None:
         "timestamp": time.time(),
     }}
     _FLOWS.append(_entry)
-    with open("/tmp/mitm_flows.json", "w") as fh:
+    with open(_FLOWS_PATH, "w") as fh:
         json.dump(_FLOWS, fh)
 """
 
@@ -171,6 +173,52 @@ class MitmFlow:
         )
 
 
+class DockerExecShell:
+    """Shell that executes commands inside a Docker container via ``docker exec``.
+
+    Satisfies the interface expected by ``MitmProxyHandle``: an object with
+    ``async run(cmd, timeout) -> CommandResult``.  Used when the proxy runs as
+    a sidecar container rather than inside the primary sandbox.
+    """
+
+    def __init__(self, container_name: str):
+        self._container = container_name
+
+    async def run(self, command: str, timeout: int = 30) -> "CommandResult":
+        import asyncio
+        import os as _os
+
+        from cua_sandbox.interfaces.shell import CommandResult
+        from cua_sandbox.runtime.docker import _docker_bin
+
+        docker = _docker_bin()
+        # MSYS_NO_PATHCONV prevents Git Bash on Windows from mangling Unix paths
+        env = {**_os.environ, "MSYS_NO_PATHCONV": "1"}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                docker, "exec", self._container,
+                "sh", "-c", command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return CommandResult(stdout="", stderr="timeout", returncode=-1)
+
+        return CommandResult(
+            stdout=stdout_b.decode("utf-8", errors="replace"),
+            stderr=stderr_b.decode("utf-8", errors="replace"),
+            returncode=proc.returncode if proc.returncode is not None else -1,
+        )
+
+
 class MitmProxyHandle:
     """Runtime handle for the proxy sidecar (``sb.proxy``).
 
@@ -178,18 +226,35 @@ class MitmProxyHandle:
     has a proxy image.  Never construct directly.
     """
 
-    def __init__(self, proxy_shell: "Shell", proxy_container: Optional[str] = None):
+    def __init__(
+        self,
+        proxy_shell: "Shell",
+        proxy_container: Optional[str] = None,
+        flows_path: str = "/tmp/mitm_flows.json",
+        bin_path: str = "/tmp/mitm_flows.bin",
+        proxy_url: Optional[str] = None,
+    ):
         self._shell = proxy_shell
         self._container = proxy_container
+        self._flows_path = flows_path
+        self._bin_path = bin_path
+        self._windows = flows_path.startswith("C:\\") or flows_path.startswith("C:/")
+        #: Full proxy URL (e.g. ``"http://172.19.0.2:8080"``) — set by topology orchestrator
+        self.proxy_url: Optional[str] = proxy_url
 
     async def flows(self) -> List[MitmFlow]:
-        """Return all captured flows so far.
-
-        Reads ``/tmp/mitm_flows.json`` from the proxy container (written
-        continuously by the mitmproxy addon).  Returns an empty list if no
-        traffic has been captured yet.
-        """
-        result = await self._shell.run("cat /tmp/mitm_flows.json 2>/dev/null || echo '[]'")
+        """Return all captured flows so far."""
+        if self._windows:
+            result = await self._shell.run(
+                f'powershell -Command "if (Test-Path \'{self._flows_path}\') '
+                f'{{ Get-Content \'{self._flows_path}\' }} else {{ Write-Output \'[]\' }}"',
+                timeout=30,
+            )
+        else:
+            result = await self._shell.run(
+                f"cat {self._flows_path} 2>/dev/null || echo '[]'",
+                timeout=30,
+            )
         try:
             raw: List[Dict[str, Any]] = json.loads(result.stdout.strip() or "[]")
         except json.JSONDecodeError:
@@ -201,14 +266,34 @@ class MitmProxyHandle:
         import base64
         from pathlib import Path
 
-        result = await self._shell.run("base64 /tmp/mitm_flows.bin 2>/dev/null || echo ''")
+        if self._windows:
+            result = await self._shell.run(
+                f'powershell -Command "[Convert]::ToBase64String([IO.File]::ReadAllBytes(\'{self._bin_path}\'))"',
+                timeout=60,
+            )
+        else:
+            result = await self._shell.run(
+                f"base64 {self._bin_path} 2>/dev/null || echo ''",
+                timeout=60,
+            )
         b64 = result.stdout.strip()
         if b64:
             Path(local_path).write_bytes(base64.b64decode(b64))
 
     async def clear(self) -> None:
         """Clear the captured flow log."""
-        await self._shell.run("echo '[]' > /tmp/mitm_flows.json && truncate -s 0 /tmp/mitm_flows.bin 2>/dev/null || true")
+        if self._windows:
+            await self._shell.run(
+                f'powershell -Command "\'[]\' | Set-Content \'{self._flows_path}\'; '
+                f'[IO.File]::WriteAllBytes(\'{self._bin_path}\', @())"',
+                timeout=15,
+            )
+        else:
+            await self._shell.run(
+                f"echo '[]' > {self._flows_path}"
+                f" && truncate -s 0 {self._bin_path} 2>/dev/null || true",
+                timeout=15,
+            )
 
 
 # ── builder ──────────────────────────────────────────────────────────────────

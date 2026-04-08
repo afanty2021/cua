@@ -235,6 +235,7 @@ class AndroidEmulatorRuntime(Runtime):
         gpu_mode: str = "swiftshader_indirect",
         headless: bool = True,
         grpc_port: Optional[int] = None,
+        writable_system: bool = False,
     ):
         self.api_level = api_level
         self.img_type = img_type
@@ -246,6 +247,8 @@ class AndroidEmulatorRuntime(Runtime):
         self.gpu_mode = gpu_mode
         self.headless = headless
         self.grpc_port = grpc_port
+        self.writable_system = writable_system
+        self.extra_args: list[str] = []  # injected by topology orchestrator (e.g. -http-proxy)
         self._proc: Optional[subprocess.Popen] = None
         self._avd_name: Optional[str] = None
         self._sdk: Optional[Path] = None
@@ -327,6 +330,10 @@ class AndroidEmulatorRuntime(Runtime):
         ]
         if self.no_boot_anim:
             cmd.append("-no-boot-anim")
+        if self.writable_system:
+            cmd.append("-writable-system")
+        if self.extra_args:
+            cmd.extend(self.extra_args)
 
         # gRPC service: defaults to console_port+3000 if not specified
         resolved_grpc_port = self.grpc_port or (self.adb_port - 1 + 3000)
@@ -335,16 +342,16 @@ class AndroidEmulatorRuntime(Runtime):
         logger.info(f"Starting Android emulator: {' '.join(cmd)}")
         self._proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             env=env,
         )
 
         # Brief check that it didn't crash immediately
         await asyncio.sleep(3)
         if self._proc.poll() is not None:
-            stderr = self._proc.stderr.read().decode() if self._proc.stderr else ""
-            raise RuntimeError(f"Emulator crashed on launch: {stderr}")
+            out = self._proc.stdout.read().decode(errors="replace") if self._proc.stdout else ""
+            raise RuntimeError(f"Emulator crashed on launch: {out[-2000:]}")
 
         info = RuntimeInfo(
             host="localhost",

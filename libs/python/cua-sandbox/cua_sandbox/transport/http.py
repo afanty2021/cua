@@ -82,6 +82,13 @@ class HTTPTransport(Transport):
         raise RuntimeError(f"No SSE data frame in response: {text[:200]}")
 
     async def send(self, action: str, **params: Any) -> Any:
+        if action in ("shell", "run_command") and params.get("user"):
+            import shlex
+            user = params.pop("user")
+            cmd = params.get("command", "")
+            params["command"] = f"sudo -u {shlex.quote(user)} sh -c {shlex.quote(cmd)}"
+        elif "user" in params:
+            params = {k: v for k, v in params.items() if k != "user"}
         result = await self._cmd(action, params if params else None)
         return result.get("result", result)
 

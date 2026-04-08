@@ -37,8 +37,18 @@ CACHE_DIR = Path.home() / ".cua" / "cua-sandbox" / "hyperv"
 
 def _has_hyperv() -> bool:
     try:
+        # Check that Hyper-V cmdlets are available AND we have admin rights
+        # (New-VHD / New-VM both require administrator privileges)
         result = subprocess.run(
-            ["powershell", "-Command", "Get-Command New-VM -ErrorAction Stop"],
+            [
+                "powershell",
+                "-Command",
+                "Get-Command New-VM -ErrorAction Stop | Out-Null;"
+                "if (-not ([Security.Principal.WindowsPrincipal]"
+                "[Security.Principal.WindowsIdentity]::GetCurrent()"
+                ").IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+                " { exit 1 }",
+            ],
             capture_output=True,
             text=True,
         )

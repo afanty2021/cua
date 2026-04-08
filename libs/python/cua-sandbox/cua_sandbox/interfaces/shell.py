@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 from cua_sandbox.transport.base import Transport
 
@@ -24,9 +25,17 @@ class Shell:
     def __init__(self, transport: Transport):
         self._t = transport
 
-    async def run(self, command: str, timeout: int = 30) -> CommandResult:
-        """Run a shell command and return the result."""
-        result = await self._t.send("run_command", command=command, timeout=timeout)
+    async def run(self, command: str, timeout: int = 30, *, user: Optional[str] = None) -> CommandResult:
+        """Run a shell command and return the result.
+
+        Args:
+            command: Shell command to execute.
+            timeout: Seconds before the command is killed.
+            user:    Run as this user (e.g. ``"root"``).  Transport-dependent:
+                     ADB wraps with ``su 0 -c …``; SSH/HTTP wrap with
+                     ``sudo -u <user> sh -c …``.
+        """
+        result = await self._t.send("run_command", command=command, timeout=timeout, user=user)
         if isinstance(result, dict):
             rc = result.get("returncode", result.get("return_code", -1))
             return CommandResult(

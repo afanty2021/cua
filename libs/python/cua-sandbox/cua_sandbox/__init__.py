@@ -23,7 +23,7 @@ from cua_sandbox._config import configure
 from cua_sandbox.image import Image
 from cua_sandbox.interfaces.accessibility import Accessibility
 from cua_sandbox.localhost import Localhost, localhost
-from cua_sandbox.mitm import MitmFlow, MitmProxy, MitmProxyHandle
+from cua_sandbox.mitm import DockerExecShell, MitmFlow, MitmProxy, MitmProxyHandle
 from cua_sandbox.runtime.compat import (
     RuntimeSupport,
     check_local_support,

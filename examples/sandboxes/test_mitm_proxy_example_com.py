@@ -56,6 +56,8 @@ REPLACED_TEXT = "Proxy Is Working"
 
 # example.com URL to load in all apps
 TARGET_URL = "https://example.com"
+# Android uses plain HTTP to avoid CA-cert-installation complexity on API 34
+ANDROID_TARGET_URL = "http://example.com"
 
 # Pre-built release URLs for the test apps (pinned to known-good versions)
 # Tauri v0.2.2: added CUA_LOAD_URL + .deb artifact
@@ -63,10 +65,20 @@ TAURI_DEB_URL = (
     "https://github.com/trycua/desktop-test-app/releases/download"
     "/v0.2.2/desktop-test-app_amd64.deb"
 )
+# Tauri Windows — x64 NSIS installer (produced by tauri build)
+TAURI_WIN_URL = (
+    "https://github.com/trycua/desktop-test-app/releases/download"
+    "/v0.2.2/desktop-test-app-windows-x86_64.exe"
+)
 # Electron v0.1.0: initial release with CUA_LOAD_URL + electron-builder .deb
 ELECTRON_DEB_URL = (
     "https://github.com/trycua/desktop-test-app-electron/releases/download"
     "/v0.1.0/desktop-test-app-electron_0.1.0_amd64.deb"
+)
+# Electron Windows installer
+ELECTRON_WIN_URL = (
+    "https://github.com/trycua/desktop-test-app-electron/releases/download"
+    "/v0.1.0/desktop-test-app-electron-0.1.0-Setup.exe"
 )
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -82,21 +94,22 @@ def _has_docker() -> bool:
 
 def _has_qemu() -> bool:
     try:
-        subprocess.run(
-            ["qemu-system-x86_64", "--version"], capture_output=True, check=True, timeout=5
-        )
+        from cua_sandbox.runtime.qemu_installer import qemu_bin
+
+        qemu_bin()  # auto-downloads on Windows if needed
         return True
     except Exception:
         return False
 
 
-def _has_hyperv() -> bool:
-    if platform.system() != "Windows":
-        return False
+def _has_android_sdk() -> bool:
     try:
-        from cua_sandbox.runtime.hyperv import _has_hyperv as _hv
-
-        return _hv()
+        from cua_sandbox.runtime.android_emulator import _ensure_sdk, _find_bin, _sdk_path
+        sdk = _sdk_path()
+        # Check if emulator + adb exist (auto-installs if not)
+        _find_bin(sdk, "adb")
+        _find_bin(sdk, "emulator")
+        return True
     except Exception:
         return False
 
@@ -114,8 +127,32 @@ async def _wait_for_api(sb, timeout: int = 60) -> bool:
 # ── App installers ───────────────────────────────────────────────────────────
 
 
+def _is_android_sb(sb) -> bool:
+    """Return True if the sandbox is running Android."""
+    return getattr(sb._runtime_info, "environment", "") == "android"
+
+
+async def _is_windows_sb(sb) -> bool:
+    """Return True if the sandbox is running Windows."""
+    r = await sb.shell.run("ver 2>nul || echo LINUX")
+    return "LINUX" not in r.stdout and "Microsoft" in r.stdout
+
+
+
 async def _install_chromium(sb) -> None:
-    """Install Google Chrome in the sandbox (works in Docker containers)."""
+    """Install Google Chrome in the sandbox."""
+    if _is_android_sb(sb):
+        # Chrome (com.android.chrome) is pre-installed on google_apis images
+        return
+    if await _is_windows_sb(sb):
+        # Chrome is typically pre-installed on Windows 11; if not, install via winget
+        r = await sb.shell.run(
+            'powershell -Command "if (Test-Path'
+            " 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe')"
+            " { Write-Output FOUND } else { winget install --id Google.Chrome -e --accept-source-agreements"
+            " --accept-package-agreements --silent 2>$null; Write-Output INSTALLED }\""
+        )
+        return
     await sb.shell.run(
         # Install curl if missing, then download + install Google Chrome stable
         "sudo apt-get install -y --no-install-recommends curl wget -qq 2>/dev/null || true"
@@ -139,11 +176,22 @@ async def _install_node(sb) -> None:
 
 
 async def _install_tauri_app(sb) -> None:
-    """Download and install the Tauri desktop-test-app .deb (Linux amd64).
+    """Download and install the Tauri desktop-test-app."""
+    if _is_android_sb(sb):
+        pytest.skip("Tauri not available on Android")
+    if await _is_windows_sb(sb):
+        # Download and run the NSIS installer silently
+        await sb.shell.run(
+            'powershell -Command "Invoke-WebRequest'
+            f" -Uri '{TAURI_WIN_URL}'"
+            " -OutFile $env:TEMP\\desktop-test-app-setup.exe -UseBasicParsing;"
+            " Start-Process $env:TEMP\\desktop-test-app-setup.exe"
+            " -ArgumentList '/S' -Wait\"",
+            timeout=300,
+        )
+        return
 
-    Requires Ubuntu 24.04+ (GLIBC 2.39).  Skips if the system glibc is too old.
-    """
-    # Check GLIBC version — the Tauri binary requires 2.39+ (Ubuntu 24.04)
+    # Linux: check GLIBC version — the Tauri binary requires 2.39+ (Ubuntu 24.04)
     r = await sb.shell.run("ldd --version 2>&1 | head -1")
     line = r.stdout.strip()
     import re as _re
@@ -163,7 +211,20 @@ async def _install_tauri_app(sb) -> None:
 
 
 async def _install_electron_app(sb) -> None:
-    """Download and install the Electron desktop-test-app-electron .deb (Linux amd64)."""
+    """Download and install the Electron desktop-test-app-electron."""
+    if _is_android_sb(sb):
+        pytest.skip("Electron not available on Android")
+    if await _is_windows_sb(sb):
+        await sb.shell.run(
+            'powershell -Command "Invoke-WebRequest'
+            f" -Uri '{ELECTRON_WIN_URL}'"
+            " -OutFile $env:TEMP\\electron-setup.exe -UseBasicParsing;"
+            " Start-Process $env:TEMP\\electron-setup.exe"
+            " -ArgumentList '/S' -Wait\"",
+            timeout=300,
+        )
+        return
+
     await sb.shell.run(
         "sudo apt-get install -y --no-install-recommends curl wget -qq 2>/dev/null || true"
         " && (curl -fsSL -o /tmp/desktop-test-app-electron.deb"
@@ -177,51 +238,139 @@ async def _install_electron_app(sb) -> None:
 
 async def _launch_app(sb, app: str) -> None:
     """Launch the given app pointing at TARGET_URL."""
-    if app == "tauri":
-        await sb.shell.run(
-            "export DISPLAY=:1"
-            f" && export CUA_LOAD_URL={TARGET_URL}"
-            " && python3 -c 'import subprocess;"
-            "subprocess.Popen([\"desktop-test-app\",\"--no-sandbox\"],"
-            "stdout=open(\"/tmp/tauri.log\",\"w\"),stderr=subprocess.STDOUT,"
-            "stdin=subprocess.DEVNULL,start_new_session=True)'",
-            timeout=10,
+    # Android: open URL in Chrome via shell intent (sb.shell routes through ADB transport)
+    if _is_android_sb(sb):
+        # Check proxy and cert state for diagnostics
+        proxy_state = await sb.shell.run("settings get global http_proxy", timeout=10)
+        print(f"[android] system proxy: {proxy_state.stdout.strip()!r}")
+        cert_dir = await sb.shell.run("ls /system/etc/security/cacerts/ | grep -v '^[0-9a-f]\\{8\\}' | tail -5", timeout=10)
+        print(f"[android] cacerts (non-standard): {cert_dir.stdout.strip()!r}")
+        # Count cacerts to verify remount worked
+        cert_count = await sb.shell.run("ls /system/etc/security/cacerts/ | wc -l", timeout=10)
+        print(f"[android] cacerts count: {cert_count.stdout.strip()!r}")
+
+        # Open ANDROID_TARGET_URL (HTTP) in Chrome. We use HTTP to avoid the
+        # CA-cert-installation complexity on Android API 34 — the proxy can still
+        # intercept and rewrite the response body.
+        url = ANDROID_TARGET_URL
+        result = await sb.shell.run(
+            f"am start -a android.intent.action.VIEW -d '{url}'"
+            " -n com.android.chrome/com.google.android.apps.chrome.Main",
+            timeout=15,
         )
-    elif app == "electron":
-        await sb.shell.run(
-            "export DISPLAY=:1"
-            f" && export CUA_LOAD_URL={TARGET_URL}"
-            " && python3 -c 'import subprocess;"
-            "subprocess.Popen([\"desktop-test-app-electron\",\"--use-system-default-ca\"],"
-            "stdout=open(\"/tmp/electron.log\",\"w\"),stderr=subprocess.STDOUT,"
-            "stdin=subprocess.DEVNULL,start_new_session=True)'",
-            timeout=10,
-        )
-    elif app == "chromium":
-        # Google Chrome or Chromium with system CA store
-        chromium_bin = (
-            await sb.shell.run(
-                "which google-chrome-stable 2>/dev/null"
-                " || which google-chrome 2>/dev/null"
-                " || which chromium 2>/dev/null"
-                " || which chromium-browser 2>/dev/null"
-                " || echo ''"
+        print(f"[android] am start rc={result.returncode} out={result.stdout.strip()!r} err={result.stderr.strip()!r}")
+        if result.returncode != 0:
+            # Fallback: implicit intent — let Android pick the default browser
+            r2 = await sb.shell.run(
+                f"am start -a android.intent.action.VIEW -d '{url}'",
+                timeout=15,
             )
-        ).stdout.strip()
-        if not chromium_bin:
-            pytest.skip("Chromium/Chrome not found after install")
-        # Write a launch script to avoid shell quoting complexity
-        await sb.shell.run(
-            f"printf '#!/bin/sh\\nexport DISPLAY=:1\\nexec {chromium_bin}"
-            f" --no-sandbox --disable-gpu --no-first-run"
-            f" --disable-extensions --disable-default-apps {TARGET_URL}"
-            " >/tmp/chrome.log 2>&1\\n'"
-            " > /tmp/launch_chrome.sh && chmod +x /tmp/launch_chrome.sh"
-            " && python3 -c 'import subprocess;"
-            "subprocess.Popen([\"/tmp/launch_chrome.sh\"],"
-            "stdin=subprocess.DEVNULL,start_new_session=True)'",
-            timeout=10,
-        )
+            print(f"[android] am start fallback rc={r2.returncode} out={r2.stdout.strip()!r}")
+        return
+
+    _win = await _is_windows_sb(sb)
+
+    if app == "tauri":
+        if _win:
+            # Find the installed Tauri app binary
+            await sb.shell.run(
+                'powershell -Command "'
+                "$bin = (Get-ChildItem 'C:\\Program Files\\desktop-test-app'"
+                " -Filter '*.exe' -Recurse | Select-Object -First 1).FullName;"
+                f"if ($bin) {{ $env:CUA_LOAD_URL = '{TARGET_URL}';"
+                " Start-Process $bin -WindowStyle Normal } else"
+                " { Write-Error 'Tauri binary not found' }\"",
+                timeout=10,
+            )
+        else:
+            await sb.shell.run(
+                "export DISPLAY=:1"
+                f" && export CUA_LOAD_URL={TARGET_URL}"
+                " && python3 -c 'import subprocess;"
+                "subprocess.Popen([\"desktop-test-app\",\"--no-sandbox\"],"
+                "stdout=open(\"/tmp/tauri.log\",\"w\"),stderr=subprocess.STDOUT,"
+                "stdin=subprocess.DEVNULL,start_new_session=True)'",
+                timeout=10,
+            )
+    elif app == "electron":
+        if _win:
+            await sb.shell.run(
+                'powershell -Command "'
+                "$bin = (Get-ChildItem"
+                " \"$env:LOCALAPPDATA\\desktop-test-app-electron\""
+                " -Filter '*.exe' -Recurse -ErrorAction SilentlyContinue"
+                " | Where-Object { $_.Name -notlike '*uninstall*' }"
+                " | Select-Object -First 1).FullName;"
+                f"if ($bin) {{ $env:CUA_LOAD_URL = '{TARGET_URL}';"
+                " Start-Process $bin -WindowStyle Normal } else"
+                " { Write-Error 'Electron binary not found' }\"",
+                timeout=10,
+            )
+        else:
+            proxy_arg = ""
+            if sb.proxy and sb.proxy.proxy_url:
+                proxy_arg = f',\"--proxy-server={sb.proxy.proxy_url}\"'
+            await sb.shell.run(
+                "export DISPLAY=:1"
+                f" && export CUA_LOAD_URL={TARGET_URL}"
+                " && python3 -c 'import subprocess;"
+                f"subprocess.Popen([\"desktop-test-app-electron\",\"--use-system-default-ca\"{proxy_arg}],"
+                "stdout=open(\"/tmp/electron.log\",\"w\"),stderr=subprocess.STDOUT,"
+                "stdin=subprocess.DEVNULL,start_new_session=True)'",
+                timeout=10,
+            )
+    elif app == "chromium":
+        if _win:
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ]
+            chromium_bin = None
+            for p in chrome_paths:
+                r = await sb.shell.run(
+                    f'powershell -Command "if (Test-Path \'{p}\') {{ Write-Output \'{p}\' }}"'
+                )
+                if r.stdout.strip():
+                    chromium_bin = r.stdout.strip()
+                    break
+            if not chromium_bin:
+                pytest.skip("Chrome not found on Windows")
+            await sb.shell.run(
+                f'powershell -Command "Start-Process \'{chromium_bin}\''
+                f" -ArgumentList '--no-sandbox','--disable-gpu','--no-first-run',"
+                f"'--disable-extensions','--disable-default-apps','{TARGET_URL}'"
+                " -WindowStyle Normal\"",
+                timeout=10,
+            )
+        else:
+            # Google Chrome or Chromium with system CA store (Linux)
+            chromium_bin = (
+                await sb.shell.run(
+                    "which google-chrome-stable 2>/dev/null"
+                    " || which google-chrome 2>/dev/null"
+                    " || which chromium 2>/dev/null"
+                    " || which chromium-browser 2>/dev/null"
+                    " || echo ''"
+                )
+            ).stdout.strip()
+            if not chromium_bin:
+                pytest.skip("Chromium/Chrome not found after install")
+            # Pass --proxy-server so Chrome uses the mitmproxy sidecar regardless of env vars
+            proxy_flag = ""
+            if sb.proxy and sb.proxy.proxy_url:
+                proxy_flag = f" --proxy-server={sb.proxy.proxy_url}"
+            # Write a launch script to avoid shell quoting complexity
+            await sb.shell.run(
+                f"printf '#!/bin/sh\\nexport DISPLAY=:1\\nexec {chromium_bin}"
+                f" --no-sandbox --disable-gpu --no-first-run"
+                f" --disable-extensions --disable-default-apps{proxy_flag} {TARGET_URL}"
+                " >/tmp/chrome.log 2>&1\\n'"
+                " > /tmp/launch_chrome.sh && chmod +x /tmp/launch_chrome.sh"
+                " && python3 -c 'import subprocess;"
+                "subprocess.Popen([\"/tmp/launch_chrome.sh\"],"
+                "stdin=subprocess.DEVNULL,start_new_session=True)'",
+                timeout=10,
+            )
 
 
 # ── Runtime fixtures ─────────────────────────────────────────────────────────
@@ -238,9 +387,15 @@ def _ubuntu_qemu_runtime():
 
 
 def _windows_runtime():
-    from cua_sandbox.runtime.hyperv import HyperVRuntime
+    from cua_sandbox.runtime.qemu import QEMUBaremetalRuntime
 
-    return HyperVRuntime()
+    return QEMUBaremetalRuntime(memory_mb=4096, cpu_count=4)
+
+
+def _android_runtime():
+    from cua_sandbox.runtime.android_emulator import AndroidEmulatorRuntime
+
+    return AndroidEmulatorRuntime(api_level=34, memory_mb=4096, cpu_count=4)
 
 
 RUNTIME_PARAMS = [
@@ -252,15 +407,17 @@ RUNTIME_PARAMS = [
     pytest.param(
         ("ubuntu-qemu", lambda: Image.linux("ubuntu", "24.04", kind="vm"), _ubuntu_qemu_runtime),
         id="ubuntu-qemu",
-        marks=pytest.mark.skipif(
-            not _has_qemu() or platform.system() == "Windows",
-            reason="QEMU not available",
-        ),
+        marks=pytest.mark.skipif(not _has_qemu(), reason="QEMU not available"),
     ),
     pytest.param(
         ("windows", lambda: Image.windows("11"), _windows_runtime),
         id="windows",
-        marks=pytest.mark.skipif(not _has_hyperv(), reason="Hyper-V not available"),
+        marks=pytest.mark.skipif(not _has_qemu(), reason="QEMU not available"),
+    ),
+    pytest.param(
+        ("android", lambda: Image.android("14"), _android_runtime),
+        id="android",
+        marks=pytest.mark.skipif(not _has_docker(), reason="Docker not available (needed for proxy sidecar)"),
     ),
 ]
 

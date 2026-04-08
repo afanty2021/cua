@@ -112,6 +112,7 @@ class DockerRuntime(Runtime):
         self.platform = platform
         self.privileged = privileged
         self.stop_timeout = stop_timeout
+        self.extra_flags: list[str] = []  # injected by topology orchestrator (e.g. --network)
 
     async def start(self, image: Image, name: str, *, _extra_flags: Optional[list[str]] = None, **opts) -> RuntimeInfo:
         if not _has_docker():
@@ -119,7 +120,7 @@ class DockerRuntime(Runtime):
 
         docker_image = resolve_image(image.os_type, image._registry)
         internal_api, internal_vnc = internal_ports(docker_image)
-        extra_flags: list[str] = []
+        extra_flags: list[str] = list(self.extra_flags)  # start with instance-level flags
 
         if "qemu" in docker_image:
             extra_flags += ["--cap-add", "NET_ADMIN"]

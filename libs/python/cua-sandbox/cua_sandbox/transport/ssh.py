@@ -78,6 +78,10 @@ class SSHTransport(Transport):
 
         if action in ("shell", "run_command"):
             command = params.get("command", "")
+            user = params.get("user")
+            if user:
+                import shlex
+                command = f"sudo -u {shlex.quote(user)} sh -c {shlex.quote(command)}"
             loop = asyncio.get_event_loop()
             _, stdout, stderr = await loop.run_in_executor(
                 None, lambda: self._client.exec_command(command, timeout=params.get("timeout", 30))

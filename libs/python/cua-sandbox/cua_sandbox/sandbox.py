@@ -591,112 +591,457 @@ class Sandbox:
         runtime: Optional["Runtime"] = None,
         telemetry_enabled: bool = True,
     ) -> AsyncIterator["Sandbox"]:
-        """Single-container topology: proxy and services run inside the primary container."""
+        """Multi-container topology: proxy and services run as Docker sidecar containers.
+
+        The proxy image (e.g. ``MitmProxy.image()``) is built into a real Docker image
+        and run as a separate container, networked with the primary sandbox.  This works
+        for every local runtime:
+
+        * **DockerRuntime** — primary joins a shared Docker network; iptables DNAT in
+          primary redirects outbound 80/443 to the proxy container's IP (transparent).
+        * **QEMUBaremetalRuntime / AndroidEmulatorRuntime / HyperVRuntime** — proxy
+          exposes port 8080 on the host; primary is configured to use the host gateway
+          (``10.0.2.2`` for QEMU/Android user-mode networking) as a regular proxy.
+        """
         import asyncio
         import logging
+        import os as _os_mod
+        import subprocess
+        import uuid
 
-        from cua_sandbox.builder.executor import LayerExecutor
-        from cua_sandbox.mitm import MitmProxyHandle
-        from cua_sandbox.runtime.docker import DockerRuntime
+        from cua_sandbox.mitm import DockerExecShell, MitmProxyHandle
+        from cua_sandbox.runtime.docker import DockerRuntime, _docker_bin, _find_free_port
         from cua_sandbox.topology import ServiceHandle
 
         _log = logging.getLogger(__name__)
+        # Prevent Git Bash on Windows from mangling Unix paths passed to docker CLI
+        _docker_env = {**_os_mod.environ, "MSYS_NO_PATHCONV": "1"}
+
+        _os = getattr(topology.primary, "os_type", "linux") or "linux"
 
         if runtime is None:
             runtime = DockerRuntime(privileged=True, ephemeral=True)
         elif isinstance(runtime, DockerRuntime):
             runtime.privileged = True
 
-        sb = await cls._create(
-            image=topology.primary,
-            name=name,
-            ephemeral=True,
-            local=True,
-            runtime=runtime,
-            telemetry_enabled=telemetry_enabled,
-        )
+        _is_docker_primary = isinstance(runtime, DockerRuntime)
+        # Always use regular proxy mode — transparent DNAT requires SO_ORIGINAL_DST
+        # which doesn't work reliably across Docker network namespaces on all platforms.
+        # Regular mode + env vars (http_proxy/https_proxy) + system CA trust covers all cases.
+        _use_transparent = False
+
+        run_id = uuid.uuid4().hex[:8]
+        docker = _docker_bin()
+        proxy_tag: Optional[str] = None
+        proxy_container: Optional[str] = None
+        svc_tags: dict[str, str] = {}
+        svc_containers: dict[str, str] = {}
+        network_name: Optional[str] = None
+        sb: Optional["Sandbox"] = None  # sentinel for finally
 
         try:
-            primary_url = f"http://{sb._runtime_info.host}:{sb._runtime_info.api_port}"
-            executor = LayerExecutor(primary_url, os_type="linux", timeout=600)
-
+            # ── 1. Build sidecar Docker images ───────────────────────────────
             if topology.proxy is not None:
-                _log.info("Topology: applying proxy layers to primary container ...")
-                await executor.execute_layers(list(topology.proxy._layers))
-
-                await executor.run_command(
-                    "sudo cp /root/.mitmproxy/mitmproxy-ca-cert.pem"
-                    " /usr/local/share/ca-certificates/mitmproxy.crt"
-                    " && sudo update-ca-certificates"
-                )
-
-                nss_cmd = (
-                    "sudo apt-get install -y --no-install-recommends libnss3-tools -qq 2>/dev/null || true"
-                    " && sudo mkdir -p /root/.pki/nssdb"
-                    " && sudo certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true"
-                    " && sudo certutil -d sql:/root/.pki/nssdb -A -t 'C,,' -n mitmproxy"
-                    "   -i /usr/local/share/ca-certificates/mitmproxy.crt 2>/dev/null || true"
-                    " && _U=$(id -nu 1000 2>/dev/null || echo cua)"
-                    " && _H=$(eval echo ~$_U)"
-                    " && sudo -u $_U mkdir -p $_H/.pki/nssdb"
-                    " && sudo -u $_U certutil -d sql:$_H/.pki/nssdb -N --empty-password 2>/dev/null || true"
-                    " && sudo -u $_U certutil -d sql:$_H/.pki/nssdb -A -t 'C,,' -n mitmproxy"
-                    "   -i /usr/local/share/ca-certificates/mitmproxy.crt 2>/dev/null || true"
-                )
-                await executor.run_command(nss_cmd)
-
-                mitm_launch = (
-                    "import subprocess;"
-                    "p = subprocess.Popen("
-                    "['mitmdump','--mode','transparent','--listen-port','8080',"
-                    "'--set','confdir=/root/.mitmproxy',"
-                    "'--set','ssl_insecure=true',"
-                    "'--flow-detail','1',"
-                    "'--save-stream-file','/tmp/mitm_flows.bin',"
-                    "'-s','/mitm_addon.py'],"
-                    "stdout=open('/tmp/mitmdump.log','w'),stderr=subprocess.STDOUT,"
-                    "stdin=subprocess.DEVNULL,start_new_session=True);"
-                    "open('/tmp/mitm.pid','w').write(str(p.pid))"
-                )
-                await executor.run_command('sudo python3 -c "' + mitm_launch + '"')
-                await asyncio.sleep(4)
-
-                pid_result = await executor.run_command(
-                    "cat /tmp/mitm.pid 2>/dev/null && echo OK || echo MISSING"
-                )
-                if "MISSING" in pid_result.get("stdout", ""):
-                    log_result = await executor.run_command("cat /tmp/mitmdump.log 2>/dev/null || echo ''")
-                    raise RuntimeError(
-                        "mitmdump failed to start.\nLog:\n"
-                        + log_result.get("stdout", "")[:600]
-                    )
-
-                # Ensure iptables-legacy is available (Ubuntu 24.04 ships nftables by default)
-                await executor.run_command(
-                    "sudo apt-get install -y --no-install-recommends iptables -qq 2>/dev/null || true"
-                    " && sudo update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true"
-                )
-                for cmd in [
-                    "sudo iptables -t nat -A OUTPUT -m owner --uid-owner 0 -p tcp -j RETURN",
-                    "sudo iptables -t nat -A OUTPUT -p tcp --dport 80  -j REDIRECT --to-port 8080",
-                    "sudo iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port 8080",
-                ]:
-                    await executor.run_command(cmd)
-
-                sb.proxy = MitmProxyHandle(sb.shell)
+                proxy_tag = f"cua-proxy-{run_id}"
+                _log.info("Building proxy sidecar image %r ...", proxy_tag)
+                cls._build_sidecar_image(topology.proxy, proxy_tag)
 
             for svc_name, svc_image in topology.services.items():
-                _log.info("Topology: applying service %r layers ...", svc_name)
-                await executor.execute_layers(list(svc_image._layers))
+                svc_tag = f"cua-svc-{svc_name}-{run_id}"
+                _log.info("Building service sidecar image %r ...", svc_tag)
+                cls._build_sidecar_image(svc_image, svc_tag)
+                svc_tags[svc_name] = svc_tag
+
+            # ── 2. Create shared Docker network (Docker primary only) ─────────
+            if _is_docker_primary and (topology.proxy is not None or topology.services):
+                network_name = f"cua-net-{run_id}"
+                subprocess.run(
+                    [docker, "network", "create", network_name],
+                    check=True, capture_output=True, env=_docker_env,
+                )
+                _log.info("Created Docker network %r", network_name)
+
+            # ── 3. Start proxy sidecar container ─────────────────────────────
+            proxy_host_port: Optional[int] = None
+            if topology.proxy is not None:
+                proxy_container = f"cua-proxy-{run_id}"
+                mitm_mode = "transparent" if _use_transparent else "regular"
+                # Pass mitmdump args directly (no shell) to avoid Git Bash path mangling
+                proxy_run = [
+                    docker, "run", "-d",
+                    "--name", proxy_container,
+                    "--cap-add", "NET_ADMIN",
+                ]
+                if _is_docker_primary and network_name:
+                    proxy_run += ["--network", network_name]
+                else:
+                    proxy_host_port = _find_free_port(8080, 9000)
+                    proxy_run += ["-p", f"{proxy_host_port}:8080"]
+                proxy_run += [
+                    proxy_tag,
+                    "mitmdump",
+                    "--mode", mitm_mode,
+                    "--listen-port", "8080",
+                    "--set", "confdir=/root/.mitmproxy",
+                    "--set", "ssl_insecure=true",
+                    "--flow-detail", "1",
+                    "--save-stream-file", "/tmp/mitm_flows.bin",
+                    "-s", "/mitm_addon.py",
+                ]
+                result = subprocess.run(proxy_run, capture_output=True, text=True, env=_docker_env)
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"Failed to start proxy container: {result.stderr}"
+                    )
+                _log.info("Started proxy container %r (mode=%s)", proxy_container, mitm_mode)
+
+            # ── 4. Start service sidecar containers ───────────────────────────
+            for svc_name, svc_tag in svc_tags.items():
+                svc_c = f"cua-svc-{svc_name}-{run_id}"
+                svc_containers[svc_name] = svc_c
+                svc_run = [docker, "run", "-d", "--name", svc_c]
+                if _is_docker_primary and network_name:
+                    svc_run += ["--network", network_name]
+                svc_run.append(svc_tag)
+                result = subprocess.run(svc_run, capture_output=True, text=True, env=_docker_env)
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"Failed to start service container {svc_name!r}: {result.stderr}"
+                    )
+
+            # ── 5. Start primary sandbox (with network if Docker) ─────────────
+            if _is_docker_primary and network_name:
+                # Inject network flag via the runtime's extra_flags list
+                runtime.extra_flags = getattr(runtime, "extra_flags", []) + [
+                    "--network", network_name,
+                ]
+
+            # For Android emulators: inject -http-proxy so Cronet-based apps
+            # (Chrome) route through the proxy at the emulator network level.
+            # The emulator's user-mode networking maps 10.0.2.2 → host.
+            from cua_sandbox.runtime.android_emulator import AndroidEmulatorRuntime as _AndroidRT
+            if isinstance(runtime, _AndroidRT) and proxy_host_port is not None:
+                runtime.extra_args = getattr(runtime, "extra_args", []) + [
+                    "-http-proxy", f"http://10.0.2.2:{proxy_host_port}",
+                ]
+
+            sb = await cls._create(
+                image=topology.primary,
+                name=name or f"cua-primary-{run_id}",
+                ephemeral=True,
+                local=True,
+                runtime=runtime,
+                telemetry_enabled=telemetry_enabled,
+            )
+
+            # ── 6. Wait for mitmdump and get CA cert ──────────────────────────
+            if topology.proxy is not None:
+                _log.info("Waiting for mitmdump to initialize ...")
+                await asyncio.sleep(5)
+
+                check = subprocess.run(
+                    [docker, "inspect", "--format", "{{.State.Status}}", proxy_container],
+                    capture_output=True, text=True,
+                    env={**__import__("os").environ, "MSYS_NO_PATHCONV": "1"},
+                )
+                if check.stdout.strip() != "running":
+                    logs = subprocess.run(
+                        [docker, "logs", "--tail", "50", proxy_container],
+                        capture_output=True, text=True,
+                    )
+                    raise RuntimeError(
+                        "mitmdump failed to start.\n"
+                        f"Logs:\n{logs.stdout}\n{logs.stderr}"
+                    )
+
+                cert_r = subprocess.run(
+                    [docker, "exec", proxy_container,
+                     "cat", "/root/.mitmproxy/mitmproxy-ca-cert.pem"],
+                    capture_output=True, text=True, env=_docker_env,
+                )
+                if cert_r.returncode != 0 or not cert_r.stdout.strip():
+                    raise RuntimeError(
+                        "Could not read CA cert from proxy container."
+                    )
+                ca_cert_pem = cert_r.stdout.strip()
+                _log.info("Retrieved mitmproxy CA cert (%d bytes)", len(ca_cert_pem))
+
+                # ── 7. Resolve proxy IP as seen from primary ──────────────────
+                if _is_docker_primary:
+                    import json as _json
+                    insp = subprocess.run(
+                        [docker, "inspect", proxy_container],
+                        capture_output=True, text=True, env=_docker_env,
+                    )
+                    data = _json.loads(insp.stdout)
+                    nets = data[0]["NetworkSettings"]["Networks"]
+                    net_info = nets.get(network_name, {})
+                    proxy_ip = net_info.get("IPAddress", "")
+                    if not proxy_ip:
+                        raise RuntimeError(
+                            f"Could not get proxy IP on network {network_name!r}. "
+                            f"Networks found: {list(nets.keys())}"
+                        )
+                else:
+                    # VM-type primaries reach the host via their gateway
+                    rt_name = type(runtime).__name__.lower()
+                    if "hyperv" in rt_name:
+                        proxy_ip = "192.168.137.1"   # Default Hyper-V NAT host IP
+                    else:
+                        proxy_ip = "10.0.2.2"        # QEMU / Android userspace net gateway
+                _log.info("Proxy IP (as seen from primary): %s", proxy_ip)
+
+                # ── 8. Configure primary to trust CA and route through proxy ───
+                # Docker primary: proxy port is always 8080 (intra-container).
+                # VM primaries: proxy is on the host, exposed as proxy_host_port.
+                _proxy_port = 8080 if _is_docker_primary else (proxy_host_port or 8080)
+                await cls._configure_proxy_in_primary(
+                    sb, _os, proxy_ip, _proxy_port, ca_cert_pem
+                )
+
+                sb.proxy = MitmProxyHandle(
+                    DockerExecShell(proxy_container),
+                    proxy_url=f"http://{proxy_ip}:{_proxy_port}",
+                )
+
+            # ── 9. Register service handles ───────────────────────────────────
+            for svc_name, svc_c in svc_containers.items():
+                if _is_docker_primary and network_name:
+                    import json as _json
+                    insp = subprocess.run(
+                        [docker, "inspect", svc_c],
+                        capture_output=True, text=True, env=_docker_env,
+                    )
+                    data = _json.loads(insp.stdout)
+                    nets = data[0]["NetworkSettings"]["Networks"]
+                    svc_ip = nets.get(network_name, {}).get("IPAddress", "") or "localhost"
+                else:
+                    svc_ip = "10.0.2.2"
                 sb.services[svc_name] = ServiceHandle(
-                    name=svc_name, shell=sb.shell, host="localhost"
+                    name=svc_name,
+                    shell=DockerExecShell(svc_c),
+                    host=svc_ip,
                 )
 
             yield sb
 
         finally:
-            await sb.destroy()
+            if sb is not None:
+                try:
+                    await sb.destroy()
+                except Exception:
+                    pass
+            _env = {**__import__("os").environ, "MSYS_NO_PATHCONV": "1"}
+            for c in ([proxy_container] if proxy_container else []) + list(svc_containers.values()):
+                subprocess.run([docker, "rm", "-f", c], capture_output=True, env=_env)
+            if network_name:
+                subprocess.run([docker, "network", "rm", network_name], capture_output=True, env=_env)
+            # Clean up sidecar images
+            for img in ([proxy_tag] if proxy_tag else []) + list(svc_tags.values()):
+                subprocess.run([docker, "rmi", "-f", img], capture_output=True, env=_env)
 
+    @staticmethod
+    def _build_sidecar_image(image: "Image", tag: str) -> str:
+        """Build a Docker image from an Image's _registry base and _layers.
+
+        Each ``run`` layer becomes a ``RUN`` instruction in the generated Dockerfile.
+        Returns the image tag.
+        """
+        import os
+        import subprocess
+        import tempfile
+
+        from cua_sandbox.runtime.docker import _docker_bin
+
+        if not image._registry:
+            raise ValueError(
+                "Sidecar images must be created with Image.base(<docker-ref>); "
+                f"got os_type={image.os_type!r} with no _registry."
+            )
+
+        lines = [f"FROM {image._registry}"]
+        for layer in image._layers:
+            if layer.get("type") == "run":
+                lines.append(f"RUN {layer['command']}")
+
+        dockerfile = "\n".join(lines) + "\n"
+
+        import os as _os_mod
+        env = {**_os_mod.environ, "MSYS_NO_PATHCONV": "1"}
+        with tempfile.TemporaryDirectory() as ctx:
+            with open(os.path.join(ctx, "Dockerfile"), "w") as fh:
+                fh.write(dockerfile)
+            docker = _docker_bin()
+            result = subprocess.run(
+                [docker, "build", "-t", tag, ctx],
+                capture_output=True, text=True, env=env,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"docker build failed for sidecar {tag!r}:\n{result.stderr[:2000]}"
+                )
+        return tag
+
+    # ── Proxy configuration in primary ──────────────────────────────────
+
+    @classmethod
+    async def _configure_proxy_in_primary(
+        cls,
+        sb: "Sandbox",
+        os_type: str,
+        proxy_ip: str,
+        proxy_port: int,
+        ca_cert_pem: str,
+    ) -> None:
+        """Configure the running primary sandbox to route traffic through the proxy sidecar."""
+        import logging
+
+        from cua_sandbox.builder.executor import LayerExecutor
+
+        _log = logging.getLogger(__name__)
+        _log.info("Configuring proxy in primary (os=%s proxy=%s:%d)", os_type, proxy_ip, proxy_port)
+
+        primary_url = f"http://{sb._runtime_info.host}:{sb._runtime_info.api_port}"
+        executor = LayerExecutor(primary_url, os_type=os_type, timeout=600)
+
+        if os_type == "linux":
+            await cls._configure_proxy_linux(executor, proxy_ip, proxy_port, ca_cert_pem)
+        elif os_type == "windows":
+            await cls._configure_proxy_windows(executor, proxy_ip, proxy_port, ca_cert_pem)
+        elif os_type == "android":
+            await cls._configure_proxy_android(sb, proxy_ip, proxy_port, ca_cert_pem)
+        else:
+            _log.warning("Unknown OS type %r — skipping proxy configuration", os_type)
+
+    @classmethod
+    async def _configure_proxy_linux(
+        cls, executor, proxy_ip: str, proxy_port: int, ca_cert_pem: str
+    ) -> None:
+        """Linux: install CA cert system-wide + NSS db, set http_proxy env vars.
+
+        Uses regular proxy mode (http_proxy/https_proxy env vars written to /etc/environment
+        and /etc/profile.d) rather than iptables transparent interception.  This works
+        reliably across Docker network namespaces and doesn't require SO_ORIGINAL_DST.
+        Chromium/Chrome/Electron honour these env vars and also the NSS cert store.
+        """
+        import shlex
+
+        proxy_url = f"http://{proxy_ip}:{proxy_port}"
+        cert_b64 = __import__("base64").b64encode(ca_cert_pem.encode()).decode()
+
+        # 1. Install CA cert system-wide
+        await executor.run_command(
+            f"echo {shlex.quote(cert_b64)} | base64 -d"
+            " | sudo tee /usr/local/share/ca-certificates/mitmproxy.crt > /dev/null"
+            " && sudo update-ca-certificates"
+        )
+        # 2. Trust in NSS db (Chromium/Electron use this)
+        await executor.run_command(
+            "sudo apt-get install -y --no-install-recommends libnss3-tools -qq 2>/dev/null || true"
+            " && sudo mkdir -p /root/.pki/nssdb"
+            " && sudo certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true"
+            " && sudo certutil -d sql:/root/.pki/nssdb -A -t 'C,,' -n mitmproxy"
+            "   -i /usr/local/share/ca-certificates/mitmproxy.crt 2>/dev/null || true"
+            " && _U=$(id -nu 1000 2>/dev/null || echo cua)"
+            " && _H=$(eval echo ~$_U)"
+            " && sudo -u $_U mkdir -p $_H/.pki/nssdb"
+            " && sudo -u $_U certutil -d sql:$_H/.pki/nssdb -N --empty-password 2>/dev/null || true"
+            " && sudo -u $_U certutil -d sql:$_H/.pki/nssdb -A -t 'C,,' -n mitmproxy"
+            "   -i /usr/local/share/ca-certificates/mitmproxy.crt 2>/dev/null || true"
+        )
+        # 3. Write proxy env vars to a sourced file and to /etc/environment
+        #    Also write a wrapper that computer-server can source before launching apps.
+        await executor.run_command(
+            f"printf 'http_proxy={proxy_url}\\nhttps_proxy={proxy_url}\\n"
+            f"HTTP_PROXY={proxy_url}\\nHTTPS_PROXY={proxy_url}\\n'"
+            " | sudo tee -a /etc/environment > /dev/null"
+            f" && printf 'export http_proxy={proxy_url}\\nexport https_proxy={proxy_url}\\n"
+            f"export HTTP_PROXY={proxy_url}\\nexport HTTPS_PROXY={proxy_url}\\n'"
+            " | sudo tee /etc/profile.d/cua-proxy.sh > /dev/null"
+            # Also write a short env file readable by any process
+            f" && printf 'http_proxy={proxy_url}\\nhttps_proxy={proxy_url}\\n'"
+            " | sudo tee /etc/cua-proxy-env > /dev/null"
+        )
+        # 4. Re-export env in the current computer-server session so run_command picks it up
+        #    by writing the env vars to the process's own environment via /proc/self/environ
+        #    is not possible, so instead write a wrapper sourced by the shell profile.
+        #    For Chrome/Electron, we'll rely on the --proxy-server flag set in the test launch.
+
+    @classmethod
+    async def _configure_proxy_windows(
+        cls, executor, proxy_ip: str, proxy_port: int, ca_cert_pem: str
+    ) -> None:
+        """Windows: import CA cert + set system proxy."""
+        import base64 as _b64
+
+        cert_b64 = _b64.b64encode(ca_cert_pem.encode()).decode()
+        proxy_str = f"{proxy_ip}:{proxy_port}"
+        await executor.run_command(
+            f'powershell -Command "[System.Text.Encoding]::UTF8.GetString('
+            f'[System.Convert]::FromBase64String(\'{cert_b64}\'))'
+            f' | Set-Content -Path C:\\mitmproxy-ca.pem -Encoding UTF8"'
+        )
+        await executor.run_command(
+            'powershell -Command "Import-Certificate'
+            ' -FilePath C:\\mitmproxy-ca.pem'
+            ' -CertStoreLocation Cert:\\CurrentUser\\Root"'
+        )
+        await executor.run_command(
+            f'powershell -Command "'
+            f"Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'"
+            f" -Name ProxyServer -Value '{proxy_str}';"
+            f"Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'"
+            f" -Name ProxyEnable -Value 1;"
+            f"netsh winhttp set proxy {proxy_str} ''\""
+        )
+
+    @classmethod
+    async def _configure_proxy_android(
+        cls,
+        sb: "Sandbox",
+        proxy_ip: str,
+        proxy_port: int,
+        ca_cert_pem: str,
+    ) -> None:
+        """Android: install CA cert + set system proxy via sb.shell (ADB transport)."""
+        import asyncio
+        import base64 as _b64
+
+        proxy_str = f"{proxy_ip}:{proxy_port}"
+        cert_b64 = _b64.b64encode(ca_cert_pem.encode()).decode()
+
+        # 1. Write cert to sdcard (no root needed for /sdcard)
+        await sb.shell.run(
+            f"echo {cert_b64} | base64 -d > /sdcard/mitmproxy-ca.pem",
+            timeout=30,
+        )
+
+        # 2. Get OpenSSL subject hash (Android cacerts filename must match)
+        hash_r = await sb.shell.run(
+            "openssl x509 -inform PEM -subject_hash_old -in /sdcard/mitmproxy-ca.pem | head -1",
+            timeout=15,
+        )
+        cert_hash = hash_r.stdout.strip() or "00000000"
+
+        # 3. Remount /system as writable via adb root + adb remount
+        #    (requires -writable-system emulator flag; falls back to su-based mount)
+        transport = sb._transport
+        if hasattr(transport, "send"):
+            await transport.send("adb_root")
+            await transport.send("adb_remount")
+        # Install cert
+        await sb.shell.run(
+            f"cp /sdcard/mitmproxy-ca.pem /system/etc/security/cacerts/{cert_hash}.0"
+            f" && chmod 644 /system/etc/security/cacerts/{cert_hash}.0",
+            timeout=15,
+            user="root",
+        )
+
+        # 4. Set global HTTP proxy
+        await sb.shell.run(
+            f"settings put global http_proxy {proxy_str}",
+            timeout=15,
+        )
 
     # ── Lifecycle management ─────────────────────────────────────────────
 

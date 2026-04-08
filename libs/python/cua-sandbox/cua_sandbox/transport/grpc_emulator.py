@@ -168,6 +168,10 @@ class GRPCEmulatorTransport(Transport):
             assert self._adb is not None, "Transport not connected"
             cmd = params.get("command", "")
             cmd = f"[ -f /data/local/tmp/.cua_env ] && . /data/local/tmp/.cua_env; {cmd}"
+            user = params.get("user")
+            if user == "root":
+                import shlex
+                cmd = f"su 0 -c {shlex.quote(cmd)}"
             timeout = float(params.get("timeout", 15))
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
@@ -178,6 +182,41 @@ class GRPCEmulatorTransport(Transport):
                     capture_output=True,
                     timeout=timeout,
                     check=False,
+                ),
+            )
+            return {
+                "stdout": result.stdout.decode(errors="replace"),
+                "stderr": result.stderr.decode(errors="replace"),
+                "returncode": result.returncode,
+            }
+
+        if action == "adb_root":
+            assert self._adb is not None, "Transport not connected"
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    subprocess.run,
+                    [self._adb, "-s", self._serial, "root"],
+                    capture_output=True, timeout=15, check=False,
+                ),
+            )
+            await asyncio.sleep(2)  # wait for adbd to restart as root
+            return {
+                "stdout": result.stdout.decode(errors="replace"),
+                "stderr": result.stderr.decode(errors="replace"),
+                "returncode": result.returncode,
+            }
+
+        if action == "adb_remount":
+            assert self._adb is not None, "Transport not connected"
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    subprocess.run,
+                    [self._adb, "-s", self._serial, "remount"],
+                    capture_output=True, timeout=15, check=False,
                 ),
             )
             return {
