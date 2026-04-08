@@ -155,7 +155,34 @@ class Image:
         return cls(os_type="android", distro="android", version=version, kind=kind)
 
     @classmethod
-    def from_registry(cls, ref: str) -> Image:
+    def base(cls, ref: str) -> "Image":
+        """Create a Linux container image from a Docker Hub / OCI registry reference.
+
+        Shorthand for the common case of starting from a public Docker image::
+
+            Image.base("python:3.12-slim")
+            Image.base("ubuntu:24.04")
+            Image.base("node:20-bookworm-slim")
+
+        Equivalent to ``Image.from_registry(ref)`` but always produces a
+        ``kind="container"`` Linux image with the registry tag preserved.
+
+        Args:
+            ref: Docker image reference, e.g. ``"python:3.12-slim"``.
+        """
+        parts = ref.split(":", 1)
+        distro = parts[0].split("/")[-1]  # "python:3.12-slim" → "python"
+        version = parts[1] if len(parts) > 1 else "latest"
+        return cls(
+            os_type="linux",
+            distro=distro,
+            version=version,
+            kind="container",
+            _registry=ref,
+        )
+
+    @classmethod
+    def from_registry(cls, ref: str) -> "Image":
         """Create an image from a registry reference. kind is resolved after pull."""
         return cls(os_type="linux", distro="registry", version="latest", kind=None, _registry=ref)
 
@@ -354,10 +381,59 @@ class Image:
         new_files = self._files + ((src, dst),)
         return self._with(_files=new_files)
 
-    def expose(self, port: int) -> Image:
+    def expose(self, port: int) -> "Image":
         """Expose a port."""
         new_ports = self._ports + (port,)
         return self._with(_ports=new_ports)
+
+    # ── Topology helpers ─────────────────────────────────────────────────
+
+    def with_proxy(self, proxy_image: "Image") -> "Topology":
+        """Attach a transparent proxy sidecar to this image.
+
+        The runtime automatically:
+        1. Starts the proxy container on a shared Docker network.
+        2. Copies the proxy's CA certificate into the primary container's
+           system trust store (``update-ca-certificates``).
+        3. Sets up iptables DNAT rules to redirect all outbound 80/443 through
+           the proxy (the proxy container is exempted to prevent loops).
+
+        The returned :class:`~cua_sandbox.topology.Topology` can be passed
+        directly to ``Sandbox.ephemeral()``::
+
+            mitm = MitmProxy.replace("example.com", "old", "new")
+            topology = Image.linux("ubuntu", "24.04").with_proxy(mitm)
+            async with Sandbox.ephemeral(topology, local=True) as sb:
+                flows = await sb.proxy.flows()
+
+        Args:
+            proxy_image: An Image (e.g. from ``MitmProxy.*``) to run as the
+                         transparent proxy sidecar.
+        """
+        from cua_sandbox.topology import Topology
+
+        return Topology(primary=self, proxy=proxy_image)
+
+    def with_service(self, name: str, service_image: "Image") -> "Topology":
+        """Attach a named service sidecar to this image.
+
+        The service is started on the same Docker network as the primary and
+        reachable under *name* as a hostname.  After the sandbox starts,
+        ``sb.services[name]`` exposes a :class:`~cua_sandbox.topology.ServiceHandle`
+        with a ``.shell`` for running commands inside the service container::
+
+            world = Image.base("python:3.12-slim").run("pip install androidworld-server")
+            topology = Image.android("14").with_service("world", world)
+            async with Sandbox.ephemeral(topology, local=True) as sb:
+                await sb.services["world"].shell.run("androidworld-cli reset")
+
+        Args:
+            name:          Hostname / key under which this service is reachable.
+            service_image: Image to run as the sidecar.
+        """
+        from cua_sandbox.topology import Topology
+
+        return Topology(primary=self).with_service(name, service_image)
 
     # ── Serialization ────────────────────────────────────────────────────
 

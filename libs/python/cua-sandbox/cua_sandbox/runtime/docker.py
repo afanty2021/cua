@@ -113,7 +113,7 @@ class DockerRuntime(Runtime):
         self.privileged = privileged
         self.stop_timeout = stop_timeout
 
-    async def start(self, image: Image, name: str, **opts) -> RuntimeInfo:
+    async def start(self, image: Image, name: str, *, _extra_flags: Optional[list[str]] = None, **opts) -> RuntimeInfo:
         if not _has_docker():
             raise RuntimeError("Docker is not installed or not running")
 
@@ -150,6 +150,10 @@ class DockerRuntime(Runtime):
 
         # Stop timeout
         extra_flags += ["--stop-timeout", str(self.stop_timeout)]
+
+        # Caller-injected flags (e.g. for topology network wiring)
+        if _extra_flags:
+            extra_flags += _extra_flags
 
         # Expose additional ports from image._ports
         for port in getattr(image, "_ports", ()):

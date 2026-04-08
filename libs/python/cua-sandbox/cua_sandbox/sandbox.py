@@ -57,6 +57,7 @@ except ImportError:
 
 from cua_sandbox.image import Image
 from cua_sandbox.interfaces import (
+    Accessibility,
     Clipboard,
     Keyboard,
     Mobile,
@@ -73,7 +74,9 @@ from cua_sandbox.transport.http import HTTPTransport
 from cua_sandbox.transport.websocket import WebSocketTransport
 
 if TYPE_CHECKING:
+    from cua_sandbox.mitm import MitmProxyHandle
     from cua_sandbox.runtime.base import Runtime, RuntimeInfo
+    from cua_sandbox.topology import ServiceHandle, Topology
 
 _T = TypeVar("_T")
 
@@ -260,6 +263,11 @@ class Sandbox:
         self.terminal = Terminal(transport)
         self.mobile = Mobile(transport)
         self.tunnel = Tunnel(transport)
+        self.accessibility = Accessibility(transport)
+        # Populated when started from a Topology with a proxy sidecar
+        self.proxy: Optional["MitmProxyHandle"] = None
+        # Populated when started from a Topology with service sidecars
+        self.services: dict[str, "ServiceHandle"] = {}
 
     async def _connect(self) -> None:
         await self._transport.connect()
@@ -494,7 +502,7 @@ class Sandbox:
     @asynccontextmanager
     async def ephemeral(
         cls,
-        image: Image,
+        image: "Image | Topology",
         *,
         name: Optional[str] = None,
         api_key: Optional[str] = None,
@@ -508,8 +516,15 @@ class Sandbox:
     ) -> AsyncIterator["Sandbox"]:
         """Create an ephemeral sandbox that is automatically destroyed on exit.
 
+        *image* can be a plain :class:`~cua_sandbox.image.Image` **or** a
+        :class:`~cua_sandbox.topology.Topology` (built via
+        ``Image.with_proxy()`` / ``Image.with_service()``).  When a Topology
+        is given, proxy and service sidecars are started first, the primary
+        container is connected to a shared Docker network, and
+        ``sb.proxy`` / ``sb.services`` are populated automatically.
+
         Args:
-            image: Image to run (e.g. ``Image.desktop("ubuntu")``).
+            image: Image or Topology to run.
             name: Optional name to assign to the sandbox.
             api_key: CUA API key for cloud sandboxes.
             local: Use a local runtime instead of cloud.
@@ -524,7 +539,25 @@ class Sandbox:
             async with Sandbox.ephemeral(Image.desktop("ubuntu")) as sb:
                 await sb.shell.run("whoami")
             # sandbox is destroyed here
+
+            # With topology:
+            topology = Image.linux().with_proxy(MitmProxy.replace(...))
+            async with Sandbox.ephemeral(topology, local=True) as sb:
+                flows = await sb.proxy.flows()
         """
+        from cua_sandbox.topology import Topology
+
+        if isinstance(image, Topology):
+            async with cls._ephemeral_topology(
+                image,
+                name=name,
+                local=local,
+                runtime=runtime,
+                telemetry_enabled=telemetry_enabled,
+            ) as sb:
+                yield sb
+            return
+
         sb = await cls._create(
             image=image,
             name=name,
@@ -546,6 +579,124 @@ class Sandbox:
                 await cls.suspend(sb.name, local=local, api_key=api_key)
             else:
                 await sb.destroy()
+
+    @classmethod
+    @asynccontextmanager
+    async def _ephemeral_topology(
+        cls,
+        topology: "Topology",
+        *,
+        name: Optional[str] = None,
+        local: bool = False,
+        runtime: Optional["Runtime"] = None,
+        telemetry_enabled: bool = True,
+    ) -> AsyncIterator["Sandbox"]:
+        """Single-container topology: proxy and services run inside the primary container."""
+        import asyncio
+        import logging
+
+        from cua_sandbox.builder.executor import LayerExecutor
+        from cua_sandbox.mitm import MitmProxyHandle
+        from cua_sandbox.runtime.docker import DockerRuntime
+        from cua_sandbox.topology import ServiceHandle
+
+        _log = logging.getLogger(__name__)
+
+        if runtime is None:
+            runtime = DockerRuntime(privileged=True, ephemeral=True)
+        elif isinstance(runtime, DockerRuntime):
+            runtime.privileged = True
+
+        sb = await cls._create(
+            image=topology.primary,
+            name=name,
+            ephemeral=True,
+            local=True,
+            runtime=runtime,
+            telemetry_enabled=telemetry_enabled,
+        )
+
+        try:
+            primary_url = f"http://{sb._runtime_info.host}:{sb._runtime_info.api_port}"
+            executor = LayerExecutor(primary_url, os_type="linux", timeout=600)
+
+            if topology.proxy is not None:
+                _log.info("Topology: applying proxy layers to primary container ...")
+                await executor.execute_layers(list(topology.proxy._layers))
+
+                await executor.run_command(
+                    "sudo cp /root/.mitmproxy/mitmproxy-ca-cert.pem"
+                    " /usr/local/share/ca-certificates/mitmproxy.crt"
+                    " && sudo update-ca-certificates"
+                )
+
+                nss_cmd = (
+                    "sudo apt-get install -y --no-install-recommends libnss3-tools -qq 2>/dev/null || true"
+                    " && sudo mkdir -p /root/.pki/nssdb"
+                    " && sudo certutil -d sql:/root/.pki/nssdb -N --empty-password 2>/dev/null || true"
+                    " && sudo certutil -d sql:/root/.pki/nssdb -A -t 'C,,' -n mitmproxy"
+                    "   -i /usr/local/share/ca-certificates/mitmproxy.crt 2>/dev/null || true"
+                    " && _U=$(id -nu 1000 2>/dev/null || echo cua)"
+                    " && _H=$(eval echo ~$_U)"
+                    " && sudo -u $_U mkdir -p $_H/.pki/nssdb"
+                    " && sudo -u $_U certutil -d sql:$_H/.pki/nssdb -N --empty-password 2>/dev/null || true"
+                    " && sudo -u $_U certutil -d sql:$_H/.pki/nssdb -A -t 'C,,' -n mitmproxy"
+                    "   -i /usr/local/share/ca-certificates/mitmproxy.crt 2>/dev/null || true"
+                )
+                await executor.run_command(nss_cmd)
+
+                mitm_launch = (
+                    "import subprocess;"
+                    "p = subprocess.Popen("
+                    "['mitmdump','--mode','transparent','--listen-port','8080',"
+                    "'--set','confdir=/root/.mitmproxy',"
+                    "'--set','ssl_insecure=true',"
+                    "'--flow-detail','1',"
+                    "'--save-stream-file','/tmp/mitm_flows.bin',"
+                    "'-s','/mitm_addon.py'],"
+                    "stdout=open('/tmp/mitmdump.log','w'),stderr=subprocess.STDOUT,"
+                    "stdin=subprocess.DEVNULL,start_new_session=True);"
+                    "open('/tmp/mitm.pid','w').write(str(p.pid))"
+                )
+                await executor.run_command('sudo python3 -c "' + mitm_launch + '"')
+                await asyncio.sleep(4)
+
+                pid_result = await executor.run_command(
+                    "cat /tmp/mitm.pid 2>/dev/null && echo OK || echo MISSING"
+                )
+                if "MISSING" in pid_result.get("stdout", ""):
+                    log_result = await executor.run_command("cat /tmp/mitmdump.log 2>/dev/null || echo ''")
+                    raise RuntimeError(
+                        "mitmdump failed to start.\nLog:\n"
+                        + log_result.get("stdout", "")[:600]
+                    )
+
+                # Ensure iptables-legacy is available (Ubuntu 24.04 ships nftables by default)
+                await executor.run_command(
+                    "sudo apt-get install -y --no-install-recommends iptables -qq 2>/dev/null || true"
+                    " && sudo update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true"
+                )
+                for cmd in [
+                    "sudo iptables -t nat -A OUTPUT -m owner --uid-owner 0 -p tcp -j RETURN",
+                    "sudo iptables -t nat -A OUTPUT -p tcp --dport 80  -j REDIRECT --to-port 8080",
+                    "sudo iptables -t nat -A OUTPUT -p tcp --dport 443 -j REDIRECT --to-port 8080",
+                ]:
+                    await executor.run_command(cmd)
+
+                sb.proxy = MitmProxyHandle(sb.shell)
+
+            for svc_name, svc_image in topology.services.items():
+                _log.info("Topology: applying service %r layers ...", svc_name)
+                await executor.execute_layers(list(svc_image._layers))
+                sb.services[svc_name] = ServiceHandle(
+                    name=svc_name, shell=sb.shell, host="localhost"
+                )
+
+            yield sb
+
+        finally:
+            await sb.destroy()
+
 
     # ── Lifecycle management ─────────────────────────────────────────────
 

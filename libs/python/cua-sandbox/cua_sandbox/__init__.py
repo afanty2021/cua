@@ -21,13 +21,16 @@ __version__ = "0.1.0"
 from cua_sandbox._auth import login, whoami
 from cua_sandbox._config import configure
 from cua_sandbox.image import Image
+from cua_sandbox.interfaces.accessibility import Accessibility
 from cua_sandbox.localhost import Localhost, localhost
+from cua_sandbox.mitm import MitmFlow, MitmProxy, MitmProxyHandle
 from cua_sandbox.runtime.compat import (
     RuntimeSupport,
     check_local_support,
     skip_if_unsupported,
 )
 from cua_sandbox.sandbox import Sandbox, SandboxInfo, sandbox
+from cua_sandbox.topology import ServiceHandle, Topology
 from cua_sandbox.transport.cloud import CloudTransport
 
 __all__ = [
@@ -35,6 +38,12 @@ __all__ = [
     "login",
     "whoami",
     "Image",
+    "Accessibility",
+    "MitmProxy",
+    "MitmFlow",
+    "MitmProxyHandle",
+    "Topology",
+    "ServiceHandle",
     "Sandbox",
     "SandboxInfo",
     "sandbox",

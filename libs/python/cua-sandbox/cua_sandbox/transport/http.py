@@ -62,7 +62,11 @@ class HTTPTransport(Transport):
         body = {"command": command}
         if params:
             body["params"] = params
-        resp = await self._client.post("/cmd", json=body)
+        # Use the per-command timeout if provided (e.g. long-running installs)
+        req_timeout = self._timeout
+        if params and isinstance(params.get("timeout"), (int, float)):
+            req_timeout = max(self._timeout, float(params["timeout"]) + 5)
+        resp = await self._client.post("/cmd", json=body, timeout=req_timeout)
         resp.raise_for_status()
         return self._parse_sse(resp.text)
 
