@@ -1,7 +1,8 @@
 # Cua Docker XFCE Container
 # Vanilla XFCE desktop with noVNC and computer-server
+# Uses the official KiCad 9 image as base (Debian Bookworm + KiCad 9 pre-installed)
 
-FROM ubuntu:22.04
+FROM kicad/kicad:9.0
 
 # Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
@@ -15,17 +16,18 @@ ENV API_PORT=8000
 ENV VNC_RESOLUTION=1024x768
 ENV VNC_COL_DEPTH=24
 
-# Install system dependencies first (including sudo)
+USER root
+
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     # System utilities
     sudo \
     unzip \
     zip \
     xdg-utils \
-    gcc \
     # DHCP client for networking
     isc-dhcp-client \
-    # Qt/XCB runtime deps for PyQt5 (libqxcb.so)
+    # Qt/XCB runtime deps for KiCad/XFCE
     libxcb-icccm4 \
     libxcb-image0 \
     libxcb-keysyms1 \
@@ -177,12 +179,10 @@ COPY --chown=cua:cua src/xfce-config/xfce4-power-manager.xml $HOME/.config/xfce4
 RUN echo "[Desktop Entry]\nHidden=true" > $HOME/.config/autostart/xfce4-tips-autostart.desktop && \
     echo "[Desktop Entry]\nHidden=true" > $HOME/.config/autostart/xfce4-screensaver.desktop && \
     echo "[Desktop Entry]\nHidden=true" > $HOME/.config/autostart/light-locker.desktop && \
-    echo "[Desktop Entry]\nHidden=true" > $HOME/.config/autostart/xfce4-power-manager.desktop && \
-    chown -R cua:cua $HOME/.config
+    echo "[Desktop Entry]\nHidden=true" > $HOME/.config/autostart/xfce4-power-manager.desktop
 
-# Create storage and shared directories, and Firefox cache directory
-RUN mkdir -p $HOME/storage $HOME/shared $HOME/.cache/dconf $HOME/.mozilla/firefox && \
-    chown -R cua:cua $HOME/storage $HOME/shared $HOME/.cache $HOME/.mozilla $HOME/.vnc
+# Create storage and shared directories
+RUN mkdir -p $HOME/storage $HOME/shared $HOME/.cache/dconf $HOME/.mozilla/firefox
 
 USER root
 

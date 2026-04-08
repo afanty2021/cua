@@ -170,3 +170,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["cua_bench/tests"]
+
+[tool.uv.sources]
+cua-agent = { path = "../python/agent", editable = true }
