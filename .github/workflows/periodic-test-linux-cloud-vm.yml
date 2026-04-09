@@ -22,9 +22,7 @@ jobs:
       - name: Install dependencies
         run: pip install cua pytest pytest-asyncio
 
-
-
       - name: Run test
-        run: python -m pytest examples/sandboxes/test_linux_cloud_vm
+        run: python -m pytest ./examples/sandboxes/test_linux_cloud_vm.py
         env:
           CUA_API_KEY: ${{ secrets.PERIODIC_TEST_CUA_API_KEY }}
