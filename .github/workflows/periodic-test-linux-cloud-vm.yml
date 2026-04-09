@@ -29,3 +29,23 @@ jobs:
         run: python -m pytest examples/sandboxes/test_linux_cloud_vm.py
         env:
           CUA_API_KEY: ${{ secrets.PERIODIC_TEST_CUA_API_KEY }}
+
+      - name: Alert Alertmanager on failure
+        if: failure()
+        run: |
+          curl -s -X POST https://am.cua.ai/api/v2/alerts \
+            -H 'Content-Type: application/json' \
+            -d '[{
+              "labels": {
+                "alertname": "PeriodicTestLinuxCloudVMFailed",
+                "severity": "critical",
+                "service": "cua-sdk",
+                "job": "periodic-test-linux-cloud-vm"
+              },
+              "annotations": {
+                "summary": "Periodic Linux Cloud VM test failed",
+                "description": "GitHub Actions workflow \"Periodic: Test Linux Cloud VM\" failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                "dashboard": "https://github.com/${{ github.repository }}/actions/workflows/periodic-test-linux-cloud-vm.yml"
+              },
+              "generatorURL": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }]'
