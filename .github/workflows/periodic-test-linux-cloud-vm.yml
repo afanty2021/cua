@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -23,6 +26,6 @@ jobs:
         run: pip install cua pytest pytest-asyncio
 
       - name: Run test
-        run: python -m pytest ./examples/sandboxes/test_linux_cloud_vm.py
+        run: python -m pytest examples/sandboxes/test_linux_cloud_vm.py
         env:
           CUA_API_KEY: ${{ secrets.PERIODIC_TEST_CUA_API_KEY }}
