@@ -2,7 +2,7 @@ name: "Periodic: Test Linux Cloud VM"
 
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "7/15 * * * *"
   workflow_dispatch:
   pull_request:
     paths:
