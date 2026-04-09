@@ -44,7 +44,6 @@ async def test_linux_cloud_vm():
 async def main():
     async with Sandbox.ephemeral(
         Image.linux("ubuntu", "24.04", kind="vm"),
-        name="example-linux-cloud-vm",
     ) as sb:
         result = await sb.shell.run("uname -s")
         print(f"uname: {result.stdout.strip()}")
