@@ -27,4 +27,4 @@ jobs:
       - name: Run test
         run: python -m pytest examples/sandboxes/test_linux_cloud_vm.py
         env:
-          CUA_API_KEY: ${{ secrets.CUA_API_KEY }}
+          CUA_API_KEY: ${{ secrets.PERIODIC_TEST_CUA_API_KEY }}
