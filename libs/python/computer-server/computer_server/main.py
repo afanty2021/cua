@@ -246,8 +246,18 @@ class AuthenticationManager:
         expires_at = session_data.get("expires_at", 0)
         return time.time() < expires_at
 
-    async def auth(self, container_name: str, api_key: str) -> bool:
-        """Authenticate container name and API key, using cached sessions when possible"""
+    async def auth(self, container_name: str, api_key: str, instance_name: Optional[str] = None) -> bool:
+        """Authenticate container name and API key, using cached sessions when possible.
+
+        Args:
+            container_name: The container/VM name
+            api_key: The API key for authentication
+            instance_name: Optional instance name for metrics/monitoring (defaults to container_name)
+        """
+        # Use container_name as instance_name if not provided
+        if instance_name is None:
+            instance_name = container_name
+
         # If no CONTAINER_NAME is set, always allow access (local development)
         if not self.container_name:
             logger.info(
@@ -302,11 +312,29 @@ class AuthenticationManager:
                         logger.warning(
                             f"Authentication failed for container: {container_name}. Status: {resp.status}"
                         )
+                        # Record credential injection failure with instance_name
+                        from core.telemetry import record_error
+                        record_error(
+                            "credential_injection_failure",
+                            "authentication",
+                            instance_name=instance_name,
+                            container_name=container_name,
+                            status_code=resp.status,
+                        )
 
                     return is_valid
 
         except aiohttp.ClientError as e:
             logger.error(f"Failed to validate API key with TryCUA API: {str(e)}")
+            # Record credential injection failure with instance_name
+            from core.telemetry import record_error
+            record_error(
+                "credential_injection_failure",
+                "authentication",
+                instance_name=instance_name,
+                container_name=container_name,
+                error_detail=str(e),
+            )
             # Cache failed result to avoid repeated requests
             self.sessions[session_hash] = {
                 "valid": False,
@@ -315,6 +343,15 @@ class AuthenticationManager:
             return False
         except Exception as e:
             logger.error(f"Unexpected error during authentication: {str(e)}")
+            # Record credential injection failure with instance_name
+            from core.telemetry import record_error
+            record_error(
+                "credential_injection_failure",
+                "authentication",
+                instance_name=instance_name,
+                container_name=container_name,
+                error_detail=str(e),
+            )
             # Cache failed result to avoid repeated requests
             self.sessions[session_hash] = {
                 "valid": False,
@@ -440,6 +477,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # Extract credentials
             client_api_key = auth_data.get("params", {}).get("api_key")
             client_container_name = auth_data.get("params", {}).get("container_name")
+            client_instance_name = auth_data.get("params", {}).get("instance_name")
 
             # Validate credentials using AuthenticationManager
             if not client_api_key:
@@ -455,7 +493,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 return
 
             # Use AuthenticationManager for validation
-            is_authenticated = await auth_manager.auth(client_container_name, client_api_key)
+            is_authenticated = await auth_manager.auth(
+                client_container_name, client_api_key, instance_name=client_instance_name
+            )
             if not is_authenticated:
                 await websocket.send_json({"success": False, "error": "Authentication failed"})
                 await websocket.close()
@@ -549,6 +589,7 @@ async def cmd_endpoint(
     request: Request,
     container_name: Optional[str] = Header(None, alias="X-Container-Name"),
     api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    instance_name: Optional[str] = Header(None, alias="X-Instance-Name"),
 ):
     """
     Backup endpoint for when WebSocket connections fail.
@@ -557,6 +598,7 @@ async def cmd_endpoint(
     Headers:
     - X-Container-Name: Container name for cloud authentication
     - X-API-Key: API key for cloud authentication
+    - X-Instance-Name: Instance name for metrics/monitoring (optional)
 
     Body:
     {
@@ -597,7 +639,7 @@ async def cmd_endpoint(
             raise HTTPException(status_code=401, detail="API key required")
 
         # Validate with AuthenticationManager
-        is_authenticated = await auth_manager.auth(container_name, api_key)
+        is_authenticated = await auth_manager.auth(container_name, api_key, instance_name=instance_name)
         if not is_authenticated:
             raise HTTPException(status_code=401, detail="Authentication failed")
 
@@ -659,8 +701,15 @@ async def cmd_endpoint(
 async def _require_auth(
     container_name: Optional[str],
     api_key: Optional[str],
+    instance_name: Optional[str] = None,
 ) -> None:
-    """Raise HTTPException(401) when cloud auth is configured and credentials are invalid."""
+    """Raise HTTPException(401) when cloud auth is configured and credentials are invalid.
+
+    Args:
+        container_name: The container/VM name
+        api_key: The API key for authentication
+        instance_name: Optional instance name for metrics (defaults to container_name)
+    """
     server_container_name = os.environ.get("CONTAINER_NAME")
     if not server_container_name:
         return  # local development — no auth required
@@ -668,7 +717,7 @@ async def _require_auth(
         raise HTTPException(status_code=401, detail="Container name required")
     if not api_key:
         raise HTTPException(status_code=401, detail="API key required")
-    if not await auth_manager.auth(container_name, api_key):
+    if not await auth_manager.auth(container_name, api_key, instance_name=instance_name):
         raise HTTPException(status_code=401, detail="Authentication failed")
 
 
@@ -682,6 +731,7 @@ async def pty_create(
     request: Request,
     container_name: Optional[str] = Header(None, alias="X-Container-Name"),
     api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    instance_name: Optional[str] = Header(None, alias="X-Instance-Name"),
 ):
     """Spawn a new PTY session.
 
@@ -690,7 +740,7 @@ async def pty_create(
 
     Returns: ``{"pid": int, "cols": int, "rows": int}``
     """
-    await _require_auth(container_name, api_key)
+    await _require_auth(container_name, api_key, instance_name=instance_name)
     try:
         body = await request.json()
     except Exception:
@@ -716,12 +766,13 @@ async def pty_info(
     pid: int,
     container_name: Optional[str] = Header(None, alias="X-Container-Name"),
     api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    instance_name: Optional[str] = Header(None, alias="X-Instance-Name"),
 ):
     """Return metadata for PTY session *pid*.
 
     Returns: ``{"pid": int, "cols": int, "rows": int}``
     """
-    await _require_auth(container_name, api_key)
+    await _require_auth(container_name, api_key, instance_name=instance_name)
     info = pty_manager.get_info(pid)
     if info is None:
         from fastapi import HTTPException
@@ -735,12 +786,13 @@ async def pty_kill(
     pid: int,
     container_name: Optional[str] = Header(None, alias="X-Container-Name"),
     api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    instance_name: Optional[str] = Header(None, alias="X-Instance-Name"),
 ):
     """Kill PTY session *pid*.
 
     Returns: ``{"killed": bool}``
     """
-    await _require_auth(container_name, api_key)
+    await _require_auth(container_name, api_key, instance_name=instance_name)
     killed = await pty_manager.kill(pid)
     return {"killed": killed}
 
@@ -751,12 +803,13 @@ async def pty_stdin(
     request: Request,
     container_name: Optional[str] = Header(None, alias="X-Container-Name"),
     api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    instance_name: Optional[str] = Header(None, alias="X-Instance-Name"),
 ):
     """Write data to stdin of PTY session *pid*.
 
     Body: ``{"data": "<base64-encoded bytes>"}``
     """
-    await _require_auth(container_name, api_key)
+    await _require_auth(container_name, api_key, instance_name=instance_name)
     body = await request.json()
     raw = base64.b64decode(body.get("data", ""))
     await pty_manager.send_stdin(pid, raw)
@@ -769,12 +822,13 @@ async def pty_resize(
     request: Request,
     container_name: Optional[str] = Header(None, alias="X-Container-Name"),
     api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    instance_name: Optional[str] = Header(None, alias="X-Instance-Name"),
 ):
     """Resize the terminal for PTY session *pid*.
 
     Body: ``{"cols": int, "rows": int}``
     """
-    await _require_auth(container_name, api_key)
+    await _require_auth(container_name, api_key, instance_name=instance_name)
     body = await request.json()
     await pty_manager.resize(pid, int(body.get("cols", 80)), int(body.get("rows", 24)))
     return {"ok": True}
@@ -785,6 +839,7 @@ async def pty_stream(
     pid: int,
     container_name: Optional[str] = Header(None, alias="X-Container-Name"),
     api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    instance_name: Optional[str] = Header(None, alias="X-Instance-Name"),
 ):
     """SSE stream for PTY session *pid*.
 
@@ -792,7 +847,7 @@ async def pty_stream(
     - ``data: {"type": "output", "data": "<base64>"}``
     - ``data: {"type": "exit", "code": <int>}``
     """
-    await _require_auth(container_name, api_key)
+    await _require_auth(container_name, api_key, instance_name=instance_name)
 
     q = pty_manager.subscribe(pid)
 
@@ -826,7 +881,7 @@ async def pty_ws(
 
     Auth (when CONTAINER_NAME is set): pass ``api_key`` and
     ``container_name`` as query parameters, e.g.
-    ``/pty/123/ws?api_key=…&container_name=…``.
+    ``/pty/123/ws?api_key=…&container_name=…&instance_name=…``.
 
     Client → Server messages (JSON):
     - ``{"type": "stdin",   "data": "<base64>"}``
@@ -839,8 +894,9 @@ async def pty_ws(
     """
     container_name = websocket.query_params.get("container_name")
     api_key = websocket.query_params.get("api_key")
+    instance_name = websocket.query_params.get("instance_name")
     try:
-        await _require_auth(container_name, api_key)
+        await _require_auth(container_name, api_key, instance_name=instance_name)
     except HTTPException:
         await websocket.close(code=1008)  # 1008 = Policy Violation
         return
@@ -903,6 +959,7 @@ async def pty_ws(
 async def agent_response_endpoint(
     request: Request,
     api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    instance_name: Optional[str] = Header(None, alias="X-Instance-Name"),
 ):
     """
     Minimal proxy to run ComputerAgent for up to 2 turns.
@@ -935,7 +992,7 @@ async def agent_response_endpoint(
         if not is_public:
             if not api_key:
                 raise HTTPException(status_code=401, detail="Missing AGENT PROXY auth headers")
-            ok = await auth_manager.auth(container_name, api_key)
+            ok = await auth_manager.auth(container_name, api_key, instance_name=instance_name)
             if not ok:
                 raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -1214,6 +1271,7 @@ async def playwright_exec_endpoint(
     request: Request,
     container_name: Optional[str] = Header(None, alias="X-Container-Name"),
     api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    instance_name: Optional[str] = Header(None, alias="X-Instance-Name"),
 ):
     """
     Execute Playwright browser commands.
@@ -1221,6 +1279,7 @@ async def playwright_exec_endpoint(
     Headers:
     - X-Container-Name: Container name for cloud authentication
     - X-API-Key: API key for cloud authentication
+    - X-Instance-Name: Instance name for metrics/monitoring (optional)
 
     Body:
     {
@@ -1256,7 +1315,7 @@ async def playwright_exec_endpoint(
             raise HTTPException(status_code=401, detail="API key required")
 
         # Validate with AuthenticationManager
-        is_authenticated = await auth_manager.auth(container_name, api_key)
+        is_authenticated = await auth_manager.auth(container_name, api_key, instance_name=instance_name)
         if not is_authenticated:
             raise HTTPException(status_code=401, detail="Authentication failed")
 
