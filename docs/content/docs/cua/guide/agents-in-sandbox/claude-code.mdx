@@ -36,7 +36,9 @@ export ANTHROPIC_API_KEY="your-anthropic-key"
 
 </Steps>
 
-## Run Claude Code in a sandbox
+## Run Claude Code in a cloud sandbox
+
+This spins up an ephemeral cloud VM via the Cua API. You'll need a `CUA_API_KEY` — get one from [cua.ai/dashboard](https://cua.ai/dashboard) if you don't have one yet.
 
 ```python
 import asyncio, os
@@ -45,6 +47,7 @@ from cua_sandbox import Sandbox, Image
 async def main():
     api_key = os.environ["ANTHROPIC_API_KEY"]
 
+    # CUA_API_KEY is read from your environment automatically
     async with Sandbox.ephemeral(Image.linux("ubuntu", "24.04")) as sb:
         # Install Node.js + Claude Code
         await sb.shell.run("sudo apt-get update && sudo apt-get install -y curl", timeout=60)
