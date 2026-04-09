@@ -1,5 +1,6 @@
 from cua_sandbox.interfaces.accessibility import Accessibility
 from cua_sandbox.interfaces.clipboard import Clipboard
+from cua_sandbox.interfaces.files import Files
 from cua_sandbox.interfaces.keyboard import Keyboard
 from cua_sandbox.interfaces.mobile import Mobile
 from cua_sandbox.interfaces.mouse import Mouse
@@ -12,6 +13,7 @@ from cua_sandbox.interfaces.window import Window
 __all__ = [
     "Accessibility",
     "Clipboard",
+    "Files",
     "Keyboard",
     "Mobile",
     "Mouse",

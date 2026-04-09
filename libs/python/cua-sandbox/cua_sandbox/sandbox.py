@@ -59,6 +59,7 @@ from cua_sandbox.image import Image
 from cua_sandbox.interfaces import (
     Accessibility,
     Clipboard,
+    Files,
     Keyboard,
     Mobile,
     Mouse,
@@ -259,6 +260,7 @@ class Sandbox:
         self.keyboard = Keyboard(transport)
         self.clipboard = Clipboard(transport)
         self.shell = Shell(transport)
+        self.files = Files(transport)
         self.window = Window(transport)
         self.terminal = Terminal(transport)
         self.mobile = Mobile(transport)

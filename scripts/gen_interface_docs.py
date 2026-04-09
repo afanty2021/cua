@@ -26,6 +26,7 @@ OUTPUT_FILE = REPO_ROOT / "docs/content/docs/cua/reference/sandbox-sdk/interface
 CLASS_ORDER = [
     "Shell",
     "CommandResult",
+    "Files",
     "Mouse",
     "Keyboard",
     "Screen",
@@ -41,6 +42,7 @@ CLASS_ORDER = [
 CLASS_MODULE = {
     "Shell": "shell",
     "CommandResult": "shell",
+    "Files": "files",
     "Mouse": "mouse",
     "Keyboard": "keyboard",
     "Screen": "screen",
@@ -270,6 +272,7 @@ The sandbox exposes the following interface objects on every `Sandbox` instance:
 | Attribute | Class | Purpose |
 |-----------|-------|---------|
 | `sb.shell` | `Shell` | Run shell commands |
+| `sb.files` | `Files` | Upload, download, read, write, list files |
 | `sb.mouse` | `Mouse` | Mouse control |
 | `sb.keyboard` | `Keyboard` | Keyboard control |
 | `sb.screen` | `Screen` | Screenshots and screen info |

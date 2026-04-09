@@ -15,6 +15,7 @@ The sandbox exposes the following interface objects on every `Sandbox` instance:
 | Attribute | Class | Purpose |
 |-----------|-------|---------|
 | `sb.shell` | `Shell` | Run shell commands |
+| `sb.files` | `Files` | Upload, download, read, write, list files |
 | `sb.mouse` | `Mouse` | Mouse control |
 | `sb.keyboard` | `Keyboard` | Keyboard control |
 | `sb.screen` | `Screen` | Screenshots and screen info |
@@ -33,9 +34,16 @@ Shell command execution.
 
 ### Methods
 
-#### `async run(command: str, timeout: int = 30) -> CommandResult`
+#### `async run(command: str, timeout: int = 30, user: Optional[str] = None) -> CommandResult`
 
 Run a shell command and return the result.
+
+Args:
+    command: Shell command to execute.
+    timeout: Seconds before the command is killed.
+    user:    Run as this user (e.g. ``"root"``).  Transport-dependent:
+             ADB wraps with ``su 0 -c …``; SSH/HTTP wrap with
+             ``sudo -u <user> sh -c …``.
 
 
 ---
@@ -55,6 +63,66 @@ Run a shell command and return the result.
 
 #### `@property
 success() -> bool`
+
+
+---
+
+
+## `Files`
+
+File system interface — transfer and inspect files inside a sandbox.
+
+### Methods
+
+#### `async write(remote: str, content: Union[bytes, str], timeout: int = 60) -> None`
+
+Write *content* (bytes or str) to *remote* path inside the sandbox.
+
+Uses the transport's ``write_bytes`` action (supported by
+computer-server on all platforms) with a base64-encoded body.
+Falls back to a ``cat | base64 -d`` shell pipe for transports that
+don't expose ``write_bytes`` directly.
+
+#### `async upload(local: Union[str, Path], remote: str, timeout: int = 60) -> None`
+
+Upload a local file to *remote* path inside the sandbox.
+
+#### `async read(remote: str, timeout: int = 60) -> bytes`
+
+Return the raw bytes of *remote* from inside the sandbox.
+
+Reads via ``read_bytes`` transport action, falling back to
+``base64 <file>`` over a shell command.
+
+#### `async read_text(remote: str, encoding: str = 'utf-8', timeout: int = 60) -> str`
+
+Return the text content of *remote* from inside the sandbox.
+
+#### `async download(remote: str, local: Union[str, Path], timeout: int = 60) -> None`
+
+Download *remote* from the sandbox to a *local* path.
+
+#### `async ls(remote_dir: str = '.', timeout: int = 30) -> List[str]`
+
+List files and directories inside *remote_dir*.
+
+Returns absolute paths.  Directories are suffixed with ``/``.
+
+#### `async exists(remote: str, timeout: int = 15) -> bool`
+
+Return True if *remote* exists inside the sandbox.
+
+#### `async stat(remote: str, timeout: int = 15) -> dict`
+
+Return basic stat info for *remote* (size, mtime, type).
+
+#### `async mkdir(remote: str, parents: bool = True, timeout: int = 15) -> None`
+
+Create directory *remote* inside the sandbox.
+
+#### `async rm(remote: str, recursive: bool = False, timeout: int = 15) -> None`
+
+Remove *remote* inside the sandbox.
 
 
 ---
