@@ -32,7 +32,6 @@ def _has_cua_api_key() -> bool:
 async def test_linux_cloud_vm():
     async with Sandbox.ephemeral(
         Image.linux("ubuntu", "24.04", kind="vm"),
-        name="example-linux-cloud-vm",
     ) as sb:
         result = await sb.shell.run("uname -s")
         assert result.success

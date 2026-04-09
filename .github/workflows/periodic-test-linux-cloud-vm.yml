@@ -1,0 +1,46 @@
+name: "Periodic: Test Linux Cloud VM"
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test Linux Cloud VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install cua-sandbox pytest pytest-asyncio
+
+      - name: Write test file
+        run: |
+          cat > test_linux_cloud_vm.py << 'PYEOF'
+          import os
+          import pytest
+          from cua_sandbox import Image, Sandbox
+
+          pytestmark = pytest.mark.asyncio
+
+          async def test_linux_cloud_vm():
+              async with Sandbox.ephemeral(
+                  Image.linux("ubuntu", "24.04", kind="vm"),
+              ) as sb:
+                  result = await sb.shell.run("uname -s")
+                  assert result.success
+                  assert "Linux" in result.stdout
+
+                  screenshot = await sb.screenshot()
+                  assert screenshot[:4] == b"\x89PNG"
+          PYEOF
+
+      - name: Run test
+        run: python -m pytest test_linux_cloud_vm.py -v --tb=short
+        env:
+          CUA_API_KEY: ${{ secrets.CUA_API_KEY }}
