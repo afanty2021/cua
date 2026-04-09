@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - examples/sandboxes/test_linux_cloud_vm.py
 
 jobs:
   test:
@@ -17,30 +20,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install cua-sandbox pytest pytest-asyncio
+        run: pip install cua pytest pytest-asyncio
 
-      - name: Write test file
-        run: |
-          cat > test_linux_cloud_vm.py << 'PYEOF'
-          import os
-          import pytest
-          from cua_sandbox import Image, Sandbox
 
-          pytestmark = pytest.mark.asyncio
-
-          async def test_linux_cloud_vm():
-              async with Sandbox.ephemeral(
-                  Image.linux("ubuntu", "24.04", kind="vm"),
-              ) as sb:
-                  result = await sb.shell.run("uname -s")
-                  assert result.success
-                  assert "Linux" in result.stdout
-
-                  screenshot = await sb.screenshot()
-                  assert screenshot[:4] == b"\x89PNG"
-          PYEOF
 
       - name: Run test
-        run: python -m pytest test_linux_cloud_vm.py -v --tb=short
+        run: python -m pytest examples/sandboxes/test_linux_cloud_vm.py
         env:
           CUA_API_KEY: ${{ secrets.CUA_API_KEY }}
