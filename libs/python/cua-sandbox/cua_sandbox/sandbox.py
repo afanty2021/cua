@@ -1018,6 +1018,10 @@ class Sandbox:
         if image and not runtime and not local:
             # image without runtime and not local → cloud creation
             if not any([ws_url, http_url]):
+                # Ephemeral VMs get a 30-minute server-side TTL as a safety net.
+                # If the SDK process dies without calling destroy(), the kopf
+                # operator will auto-delete the VM after this period.
+                _DEFAULT_EPHEMERAL_TTL = 30 * 60  # 30 minutes
                 transport = CloudTransport(
                     name=name,
                     api_key=api_key,
@@ -1026,6 +1030,7 @@ class Sandbox:
                     memory_mb=memory_mb,
                     disk_gb=disk_gb,
                     region=region,
+                    max_lifetime_seconds=_DEFAULT_EPHEMERAL_TTL if ephemeral else None,
                 )
                 sb = cls(
                     transport, name=name, _ephemeral=ephemeral, _telemetry_enabled=telemetry_enabled

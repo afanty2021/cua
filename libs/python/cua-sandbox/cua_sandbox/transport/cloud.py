@@ -41,6 +41,7 @@ class CloudTransport(Transport):
         memory_mb: Optional[int] = None,
         disk_gb: Optional[int] = None,
         region: str = "us-east-1",
+        max_lifetime_seconds: Optional[int] = None,
     ):
         self._name = name
         self._api_key_override = api_key
@@ -50,6 +51,7 @@ class CloudTransport(Transport):
         self._memory_mb = memory_mb
         self._disk_gb = disk_gb
         self._region = region
+        self._max_lifetime_seconds = max_lifetime_seconds
         self._inner: Optional[HTTPTransport] = None
         self._api_client: Optional[httpx.AsyncClient] = None
 
@@ -368,6 +370,9 @@ class CloudTransport(Transport):
             body["diskGb"] = self._disk_gb or self._DEFAULT_DISK_GB
         else:
             body["configuration"] = "small"
+        # Set server-side TTL so orphaned VMs are auto-deleted
+        if self._max_lifetime_seconds is not None:
+            body["maxLifetimeSeconds"] = self._max_lifetime_seconds
         resp = await self._api_client.post("/v1/vms", json=body)
         resp.raise_for_status()
         return resp.json()
