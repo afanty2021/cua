@@ -27,6 +27,7 @@ Usage::
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from contextlib import asynccontextmanager
@@ -74,6 +75,8 @@ from cua_sandbox.transport.websocket import WebSocketTransport
 
 if TYPE_CHECKING:
     from cua_sandbox.runtime.base import Runtime, RuntimeInfo
+
+logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
@@ -1018,7 +1021,23 @@ class Sandbox:
                 sb = cls(
                     transport, name=name, _ephemeral=ephemeral, _telemetry_enabled=telemetry_enabled
                 )
-                await sb._connect()
+                try:
+                    await sb._connect()
+                except BaseException:
+                    # _connect() calls CloudTransport.connect() which may have
+                    # already created a VM before failing (e.g. timeout while
+                    # polling for "running" status).  Delete the orphan so it
+                    # doesn't leak.
+                    vm_name = transport._name
+                    if vm_name:
+                        try:
+                            await transport.delete_vm()
+                        except Exception:
+                            logger.warning(
+                                "Failed to clean up cloud VM %r after connect failure",
+                                vm_name,
+                            )
+                    raise
                 _record_sandbox_create(
                     sb, image=image, local=False, ephemeral=bool(ephemeral), t_start=_t_start
                 )
