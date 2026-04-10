@@ -517,6 +517,7 @@ class Sandbox:
         disk_gb: Optional[int] = None,
         region: str = "us-east-1",
         telemetry_enabled: bool = True,
+        ttl_seconds: Optional[int] = 3600,
     ) -> AsyncIterator["Sandbox"]:
         """Create an ephemeral sandbox that is automatically destroyed on exit.
 
@@ -530,6 +531,10 @@ class Sandbox:
             memory_mb: Memory in MB for the cloud sandbox.
             disk_gb: Disk size in GB for the cloud sandbox.
             region: Cloud region (default ``"us-east-1"``).
+            ttl_seconds: Server-side TTL in seconds (default 3600 = 1 hour).
+                The cloud operator auto-deletes the VM after this time even if
+                the client crashes without calling destroy(). Set to None to
+                disable. Only applies to cloud sandboxes.
 
         Example::
 
@@ -549,6 +554,7 @@ class Sandbox:
             disk_gb=disk_gb,
             region=region,
             telemetry_enabled=telemetry_enabled,
+            ttl_seconds=ttl_seconds,
         )
         try:
             yield sb
@@ -962,6 +968,7 @@ class Sandbox:
         disk_gb: Optional[int] = None,
         region: str = "us-east-1",
         telemetry_enabled: bool = True,
+        ttl_seconds: Optional[int] = None,
     ) -> "Sandbox":
         """Internal workhorse — all public factories delegate here."""
         _t_start = time.monotonic()
@@ -1026,6 +1033,7 @@ class Sandbox:
                     memory_mb=memory_mb,
                     disk_gb=disk_gb,
                     region=region,
+                    ttl_seconds=ttl_seconds,
                 )
                 sb = cls(
                     transport, name=name, _ephemeral=ephemeral, _telemetry_enabled=telemetry_enabled
