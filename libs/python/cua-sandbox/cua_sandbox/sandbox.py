@@ -313,9 +313,7 @@ class Sandbox:
     async def destroy(self) -> None:
         """Disconnect and permanently delete the sandbox (VM/container)."""
         if self._has_snapshots:
-            import logging
-
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "Destroying sandbox %s which has snapshots — "
                 "forks referencing those snapshots will break. "
                 "Use Sandbox.ephemeral() which auto-stops instead of deleting "
@@ -324,15 +322,26 @@ class Sandbox:
             )
         if self.telemetry_enabled and _TELEMETRY_AVAILABLE and is_telemetry_enabled():
             record_event("sandbox_destroy", {"name": self.name, "ephemeral": self._ephemeral})
-        await self._transport.disconnect()
+        # Run each cleanup step independently so a failure in one
+        # (e.g. disconnect timeout) doesn't prevent the VM from being deleted.
+        try:
+            await self._transport.disconnect()
+        except Exception:
+            logger.warning("Failed to disconnect transport for sandbox %r", self.name)
         if isinstance(self._transport, CloudTransport):
-            await self._transport.delete_vm()
+            try:
+                await self._transport.delete_vm()
+            except Exception:
+                logger.warning("Failed to delete cloud VM %r", self.name)
         if self._runtime and self._runtime_info:
             vm_name = self._runtime_info.name or self.name or "cua-sandbox"
-            if self._ephemeral and hasattr(self._runtime, "delete"):
-                await self._runtime.delete(vm_name)
-            else:
-                await self._runtime.stop(vm_name)
+            try:
+                if self._ephemeral and hasattr(self._runtime, "delete"):
+                    await self._runtime.delete(vm_name)
+                else:
+                    await self._runtime.stop(vm_name)
+            except Exception:
+                logger.warning("Failed to stop/delete runtime for sandbox %r", self.name)
 
     async def screenshot(
         self, text: Optional[str] = None, format: str = "png", quality: int = 95
