@@ -343,12 +343,14 @@ class CloudTransport(Transport):
         # Fork path: image came from sb.snapshot() — create VM from snapshot
         snap_source = getattr(self._image, "_snapshot_source", None)
         if snap_source:
-            body = {
+            body: Dict[str, Any] = {
                 "source": "snapshot",
                 "instance": snap_source["instance"],
                 "snapshot": snap_source["snapshot"],
                 "instanceType": snap_source.get("instanceType", "vm"),
             }
+            if self._ttl_seconds is not None and self._ttl_seconds > 0:
+                body["ttlSeconds"] = self._ttl_seconds
             resp = await self._api_client.post("/v1/vms", json=body)
             resp.raise_for_status()
             return resp.json()
