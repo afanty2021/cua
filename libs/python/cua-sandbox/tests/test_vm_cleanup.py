@@ -24,6 +24,7 @@ pytestmark = pytest.mark.asyncio
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_cloud_transport(*, name: str = "test-vm") -> CloudTransport:
     """Return a CloudTransport with internal state set as if _create_vm() succeeded."""
     t = CloudTransport.__new__(CloudTransport)
@@ -256,10 +257,17 @@ class TestEphemeralCleanup:
         transport.disconnect = AsyncMock()
         transport.delete_vm = AsyncMock()
 
-        with patch.object(
-            CloudTransport, "__init__", lambda self, **kw: None,
-        ), patch.object(
-            CloudTransport, "__new__", lambda cls, **kw: transport,
+        with (
+            patch.object(
+                CloudTransport,
+                "__init__",
+                lambda self, **kw: None,
+            ),
+            patch.object(
+                CloudTransport,
+                "__new__",
+                lambda cls, **kw: transport,
+            ),
         ):
             async with Sandbox.ephemeral(
                 Image.linux("ubuntu", "24.04"),
@@ -277,17 +285,24 @@ class TestEphemeralCleanup:
         transport.disconnect = AsyncMock()
         transport.delete_vm = AsyncMock()
 
-        with patch.object(
-            CloudTransport, "__init__", lambda self, **kw: None,
-        ), patch.object(
-            CloudTransport, "__new__", lambda cls, **kw: transport,
+        with (
+            patch.object(
+                CloudTransport,
+                "__init__",
+                lambda self, **kw: None,
+            ),
+            patch.object(
+                CloudTransport,
+                "__new__",
+                lambda cls, **kw: transport,
+            ),
         ):
             with pytest.raises(AssertionError):
                 async with Sandbox.ephemeral(
                     Image.linux("ubuntu", "24.04"),
                     api_key="sk-fake",
                     telemetry_enabled=False,
-                ) as sb:
+                ) as _sb:
                     raise AssertionError("test failed")
 
         transport.delete_vm.assert_awaited_once()
@@ -298,17 +313,24 @@ class TestEphemeralCleanup:
         transport.connect = AsyncMock(side_effect=httpx.ReadTimeout("poll timed out"))
         transport.delete_vm = AsyncMock()
 
-        with patch.object(
-            CloudTransport, "__init__", lambda self, **kw: None,
-        ), patch.object(
-            CloudTransport, "__new__", lambda cls, **kw: transport,
+        with (
+            patch.object(
+                CloudTransport,
+                "__init__",
+                lambda self, **kw: None,
+            ),
+            patch.object(
+                CloudTransport,
+                "__new__",
+                lambda cls, **kw: transport,
+            ),
         ):
             with pytest.raises(httpx.ReadTimeout):
                 async with Sandbox.ephemeral(
                     Image.linux("ubuntu", "24.04"),
                     api_key="sk-fake",
                     telemetry_enabled=False,
-                ) as sb:
+                ) as _sb:
                     pass  # never reached
 
         transport.delete_vm.assert_awaited_once()
