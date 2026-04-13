@@ -1041,12 +1041,9 @@ class Sandbox:
                     # not destroy a VM that may be provisioning just fine.
                     import httpx as _httpx
 
-                    _is_transient = isinstance(
-                        connect_err,
-                        (_httpx.TransportError, _httpx.TimeoutException),
-                    ) or (
+                    _is_transient = (
                         isinstance(connect_err, _httpx.HTTPStatusError)
-                        and connect_err.response.status_code >= 500
+                        and connect_err.response.status_code == 404
                     )
                     vm_name = transport._name
                     if vm_name and not _is_transient:
