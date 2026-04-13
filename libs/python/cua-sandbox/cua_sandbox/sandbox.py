@@ -1032,13 +1032,24 @@ class Sandbox:
                 )
                 try:
                     await sb._connect()
-                except BaseException:
+                except BaseException as connect_err:
                     # _connect() calls CloudTransport.connect() which may have
                     # already created a VM before failing (e.g. timeout while
                     # polling for "running" status).  Delete the orphan so it
-                    # doesn't leak.
+                    # doesn't leak — but only for permanent failures.
+                    # Transient errors (network blips, server overload) should
+                    # not destroy a VM that may be provisioning just fine.
+                    import httpx as _httpx
+
+                    _is_transient = isinstance(
+                        connect_err,
+                        (_httpx.TransportError, _httpx.TimeoutException),
+                    ) or (
+                        isinstance(connect_err, _httpx.HTTPStatusError)
+                        and connect_err.response.status_code >= 500
+                    )
                     vm_name = transport._name
-                    if vm_name:
+                    if vm_name and not _is_transient:
                         try:
                             await transport.delete_vm()
                         except Exception:
@@ -1046,6 +1057,12 @@ class Sandbox:
                                 "Failed to clean up cloud VM %r after connect failure",
                                 vm_name,
                             )
+                    elif vm_name and _is_transient:
+                        logger.warning(
+                            "Cloud VM %r NOT deleted after transient connect failure: %s",
+                            vm_name,
+                            connect_err,
+                        )
                     raise
                 _record_sandbox_create(
                     sb, image=image, local=False, ephemeral=bool(ephemeral), t_start=_t_start
