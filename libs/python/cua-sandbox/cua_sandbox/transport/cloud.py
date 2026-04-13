@@ -19,7 +19,7 @@ from cua_sandbox.transport.http import HTTPTransport
 logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 0.5  # seconds between status polls
-_POLL_TIMEOUT = 600.0  # max seconds to wait for VM to be running
+_POLL_TIMEOUT = 180.0  # max seconds to wait for VM to be running
 
 
 class CloudTransport(Transport):
@@ -152,6 +152,7 @@ class CloudTransport(Transport):
             """Poll VM status; start TCP/HTTP probe as soon as we have a direct IP."""
             nonlocal vm_info, probe_task, resolved_url
             elapsed = 0.0
+            last_progress = 0.0
             is_running = vm_info.get("status") in ("running", "ready")
 
             while elapsed < _POLL_TIMEOUT:
@@ -176,6 +177,13 @@ class CloudTransport(Transport):
                 elapsed += _POLL_INTERVAL
                 vm_info = await self._get_vm(self._name)
                 is_running = vm_info.get("status") in ("running", "ready")
+
+                if elapsed - last_progress >= 10.0:
+                    logger.debug(
+                        "[cloud] _poll_and_probe: %.0fs elapsed, status=%s, endpoint=%s",
+                        elapsed, vm_info.get("status"), "resolved" if resolved_url else "pending",
+                    )
+                    last_progress = elapsed
 
             if not is_running:
                 raise TimeoutError(
@@ -549,11 +557,20 @@ class CloudTransport(Transport):
 
         apk_bytes = Path(apk_path).read_bytes()
         dest = "/data/local/tmp/cua_pwa.apk"
-        await self._inner.send(
-            "write_bytes",
-            path=dest,
-            content_b64=base64.b64encode(apk_bytes).decode(),
-        )
+        logger.debug("[cloud] pushing APK to VM (%d bytes)...", len(apk_bytes))
+        try:
+            await asyncio.wait_for(
+                self._inner.send(
+                    "write_bytes",
+                    path=dest,
+                    content_b64=base64.b64encode(apk_bytes).decode(),
+                ),
+                timeout=120.0,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"write_bytes timed out after 120s pushing APK ({len(apk_bytes)} bytes) to {dest}"
+            )
         logger.debug(f"[cloud] installing APK: pm install -r {dest}")
         await self._inner.send(
             "run_command",
