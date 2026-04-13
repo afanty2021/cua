@@ -23,6 +23,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cua-mcp")
 
+# Suppress verbose HTTP client debug output from httpx/httpcore
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
 
 class Permission(Enum):
     """MCP permission types."""

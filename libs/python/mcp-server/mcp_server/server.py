@@ -13,11 +13,15 @@ import anyio
 
 # Configure logging to output to stderr for debug visibility
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG
+    level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     stream=sys.stderr,
 )
 logger = logging.getLogger("mcp-server")
+
+# Suppress verbose HTTP client debug output from httpx/httpcore
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 # More visible startup message
 logger.debug("MCP Server module loading...")
