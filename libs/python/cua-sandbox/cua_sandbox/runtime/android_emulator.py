@@ -403,9 +403,8 @@ class AndroidEmulatorRuntime(Runtime):
                         timeout=120,
                     )
                     if result.returncode != 0:
-                        logger.warning(f"APK install failed: {result.stderr}")
-                    else:
-                        logger.info(f"APK installed: {result.stdout.strip()}")
+                        raise RuntimeError(f"APK install failed: {result.stderr}")
+                    logger.info(f"APK installed: {result.stdout.strip()}")
             elif lt == "pwa_install":
                 manifest_url = layer["manifest_url"]
                 pkg = layer.get("package_name")
@@ -439,9 +438,8 @@ class AndroidEmulatorRuntime(Runtime):
                     timeout=120,
                 )
                 if result.returncode != 0:
-                    logger.warning(f"PWA APK install failed: {result.stderr}")
-                else:
-                    logger.info(f"PWA APK installed: {result.stdout.strip()}")
+                    raise RuntimeError(f"PWA APK install failed: {result.stderr}")
+                logger.info(f"PWA APK installed: {result.stdout.strip()}")
 
                 # For bubblewrap TWA, set Chrome flags.  pwa2apk doesn't need this.
                 if builder == "bubblewrap":

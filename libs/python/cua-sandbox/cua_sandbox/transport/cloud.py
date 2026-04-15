@@ -500,17 +500,21 @@ class CloudTransport(Transport):
             path=dest,
             content_b64=base64.b64encode(apk_bytes).decode(),
         )
-        await self._inner.send(
+        result = await self._inner.send(
             "run_command",
             command=(
-                f"out=$(pm install -r {dest} 2>&1); "
+                f"out=$(pm install -r {dest} 2>&1); rc=$?; "
                 f'if echo "$out" | grep -q INSTALL_FAILED_UPDATE_INCOMPATIBLE; then '
                 f'  pkg=$(echo "$out" | sed -n "s/.*Package \\(\\S*\\) signatures.*/\\1/p"); '
                 f'  pm uninstall "$pkg"; pm install -r {dest}; '
-                f'else echo "$out"; fi; true'
+                f'else echo "$out"; exit $rc; fi'
             ),
             timeout=90,
         )
+        # Check if install succeeded
+        output = result.get("output", "") if isinstance(result, dict) else str(result)
+        if "Failure" in output or "Error" in output:
+            raise RuntimeError(f"APK install failed: {output}")
 
     async def _install_pwa(self, layer: dict) -> None:
         """Build PWA APK on the host, then push and install.
@@ -555,11 +559,15 @@ class CloudTransport(Transport):
             content_b64=base64.b64encode(apk_bytes).decode(),
         )
         logger.debug(f"[cloud] installing APK: pm install -r {dest}")
-        await self._inner.send(
+        result = await self._inner.send(
             "run_command",
-            command=f"pm install -r {dest} 2>&1; true",
+            command=f"pm install -r {dest} 2>&1",
             timeout=120,
         )
+        # Check if install succeeded
+        output = result.get("output", "") if isinstance(result, dict) else str(result)
+        if "Failure" in output or "Error" in output:
+            raise RuntimeError(f"PWA APK install failed: {output}")
         logger.debug("[cloud] APK installed")
 
         # For bubblewrap TWA, suppress Chrome first-run and set asset link bypass.
