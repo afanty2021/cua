@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Literal, Optional, Union, cast
 
 import aiohttp
 import uvicorn
-from core.telemetry import record_event
+from cua_core.telemetry import record_event
 from fastapi import (
     FastAPI,
     Header,
@@ -41,7 +41,7 @@ except ImportError:
 AUTH_SESSION_TTL_SECONDS: int = int(os.environ.get("CUA_AUTH_TTL_SECONDS", "60"))
 
 try:
-    from agent import ComputerAgent
+    from cua_agent import ComputerAgent
 
     HAS_AGENT = True
 except ImportError:

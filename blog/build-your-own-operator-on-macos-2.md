@@ -481,7 +481,7 @@ For a visual interface to your agent, the package also includes a Gradio UI:
 1. Create a file named `launch_ui.py` with the following code:
 
 ```python
-from agent.ui.gradio.app import create_gradio_ui
+from cua_agent.ui.gradio.app import create_gradio_ui
 
 # Create and launch the UI
 if __name__ == "__main__":
