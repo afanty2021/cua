@@ -1,0 +1,78 @@
+name: "Periodic: Test Linux Cloud VM (Multi-Instance)"
+
+on:
+  # schedule:
+  #   - cron: "47/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      instance_count:
+        description: "Number of instances to spawn"
+        required: false
+        default: "10"
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/periodic-test-linux-cloud-vm-multi.yml
+      - examples/sandboxes/test_linux_cloud_vm.py
+
+jobs:
+  setup:
+    name: Setup Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          COUNT=${{ github.event.inputs.instance_count || '10' }}
+          MATRIX=$(seq 1 "$COUNT" | jq -R . | jq -s -c .)
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+  test:
+    name: Test Instance ${{ matrix.instance }}
+    runs-on: ubuntu-latest
+    needs: setup
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        instance: ${{ fromJson(needs.setup.outputs.matrix) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install cua pytest pytest-asyncio
+
+      - name: Run test
+        run: python -m pytest examples/sandboxes/test_linux_cloud_vm.py -v -s
+        env:
+          CUA_API_KEY: ${{ secrets.PERIODIC_TEST_CUA_API_KEY }}
+
+      - name: Alert Alertmanager on failure
+        if: failure()
+        run: |
+          curl -s -X POST https://am.cua.ai/api/v2/alerts \
+            -H 'Content-Type: application/json' \
+            -d '[{
+              "labels": {
+                "alertname": "PeriodicTestLinuxCloudVMMultiFailed",
+                "severity": "critical",
+                "service": "cua-sdk",
+                "job": "periodic-test-linux-cloud-vm-multi",
+                "instance": "${{ matrix.instance }}"
+              },
+              "annotations": {
+                "summary": "Periodic Linux Cloud VM test failed (instance ${{ matrix.instance }})",
+                "description": "GitHub Actions workflow \"Periodic: Test Linux Cloud VM (Multi-Instance)\" failed on instance ${{ matrix.instance }}. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                "dashboard": "https://github.com/${{ github.repository }}/actions/workflows/periodic-test-linux-cloud-vm-multi.yml"
+              },
+              "generatorURL": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }]'
