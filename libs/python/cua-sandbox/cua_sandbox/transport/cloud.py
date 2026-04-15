@@ -164,10 +164,10 @@ class CloudTransport(Transport):
                         # Got a direct IP — start probing if not already
                         if probe_task is None:
                             resolved_url = url
-                            logger.debug("[cloud] early endpoint: %s at %.1fs — starting probe", url, elapsed)
-                            probe_task = asyncio.create_task(
-                                _connect_and_wait_ready(url, api_key)
+                            logger.debug(
+                                "[cloud] early endpoint: %s at %.1fs — starting probe", url, elapsed
                             )
+                            probe_task = asyncio.create_task(_connect_and_wait_ready(url, api_key))
                 except (ValueError, KeyError):
                     pass
 
@@ -343,12 +343,14 @@ class CloudTransport(Transport):
         # Fork path: image came from sb.snapshot() — create VM from snapshot
         snap_source = getattr(self._image, "_snapshot_source", None)
         if snap_source:
-            body = {
+            body: Dict[str, Any] = {
                 "source": "snapshot",
                 "instance": snap_source["instance"],
                 "snapshot": snap_source["snapshot"],
                 "instanceType": snap_source.get("instanceType", "vm"),
             }
+            if self._ephemeral:
+                body["tags"] = ["ephemeral"]
             resp = await self._api_client.post("/v1/vms", json=body)
             resp.raise_for_status()
             return resp.json()
@@ -411,7 +413,9 @@ class CloudTransport(Transport):
             try:
                 resp = await self._inner._client.get("/", timeout=2.0)
                 # Any response means the server is up
-                logger.debug("[cloud] server HTTP up (status=%d) at %.1fs", resp.status_code, elapsed)
+                logger.debug(
+                    "[cloud] server HTTP up (status=%d) at %.1fs", resp.status_code, elapsed
+                )
                 break
             except Exception as e:
                 last_err = e
