@@ -12,21 +12,12 @@ from typing import Any, Callable, Optional
 
 from .interface.base import BaseComputerInterface
 
-# Import OTEL functions - available when cua-core[telemetry] is installed
-try:
-    from cua_core.telemetry import (
-        create_span,
-        is_otel_enabled,
-        record_error,
-        record_operation,
-    )
-
-    OTEL_AVAILABLE = True
-except ImportError:
-    OTEL_AVAILABLE = False
-
-    def is_otel_enabled() -> bool:
-        return False
+from cua_core.telemetry import (
+    create_span,
+    is_otel_enabled,
+    record_error,
+    record_operation,
+)
 
 
 # Actions that should be instrumented
@@ -95,7 +86,7 @@ class OtelInterfaceWrapper:
         """
         self._original_interface = original_interface
         self._os_type = os_type
-        self._enabled = OTEL_AVAILABLE and is_otel_enabled()
+        self._enabled = is_otel_enabled()
 
     def __getattr__(self, name: str) -> Any:
         """
@@ -149,19 +140,18 @@ class OtelInterfaceWrapper:
                 duration = time.perf_counter() - start_time
 
                 # Record operation metrics
-                if OTEL_AVAILABLE:
-                    record_operation(
-                        operation=f"computer.action.{name}",
-                        duration_seconds=duration,
-                        status=status,
-                        os_type=self._os_type,
-                    )
+                record_operation(
+                    operation=f"computer.action.{name}",
+                    duration_seconds=duration,
+                    status=status,
+                    os_type=self._os_type,
+                )
 
-                    if error_type:
-                        record_error(
-                            error_type=error_type,
-                            operation=f"computer.action.{name}",
-                        )
+                if error_type:
+                    record_error(
+                        error_type=error_type,
+                        operation=f"computer.action.{name}",
+                    )
 
         return instrumented
 
@@ -180,7 +170,7 @@ def wrap_interface_with_otel(
     Returns:
         The wrapped interface (or original if OTEL disabled)
     """
-    if not OTEL_AVAILABLE or not is_otel_enabled():
+    if not is_otel_enabled():
         return interface
 
     return OtelInterfaceWrapper(interface, os_type)  # type: ignore

@@ -43,19 +43,11 @@ from .tracing import ComputerTracing
 from .tracing_wrapper import TracingInterfaceWrapper
 
 # Import OTEL functions for session-level metrics
-try:
-    from cua_core.telemetry import (
-        is_otel_enabled,
-        record_operation,
-        track_concurrent,
-    )
-
-    OTEL_AVAILABLE = True
-except ImportError:
-    OTEL_AVAILABLE = False
-
-    def is_otel_enabled() -> bool:
-        return False
+from cua_core.telemetry import (
+    is_otel_enabled,
+    record_operation,
+    track_concurrent,
+)
 
 
 SYSTEM_INFO = {
@@ -681,7 +673,7 @@ class Computer:
             self.logger.info("Computer successfully initialized")
 
             # Record session start in OTEL
-            if OTEL_AVAILABLE and is_otel_enabled() and self._telemetry_enabled:
+            if is_otel_enabled() and self._telemetry_enabled:
                 duration_seconds = time.time() - start_time
                 record_operation(
                     operation="computer.session.start",
@@ -692,7 +684,7 @@ class Computer:
                 )
         except Exception as e:
             # Record failed session start
-            if OTEL_AVAILABLE and is_otel_enabled() and self._telemetry_enabled:
+            if is_otel_enabled() and self._telemetry_enabled:
                 duration_seconds = time.time() - start_time
                 record_operation(
                     operation="computer.session.start",
@@ -743,7 +735,7 @@ class Computer:
             self.logger.info("Computer stopped")
 
             # Record session stop in OTEL
-            if OTEL_AVAILABLE and is_otel_enabled() and self._telemetry_enabled:
+            if is_otel_enabled() and self._telemetry_enabled:
                 duration_seconds = time.time() - start_time
                 record_operation(
                     operation="computer.session.stop",
@@ -1057,8 +1049,7 @@ class Computer:
 
         # Apply OTEL wrapper if enabled and telemetry is on
         if (
-            OTEL_AVAILABLE
-            and is_otel_enabled()
+            is_otel_enabled()
             and self._telemetry_enabled
             and hasattr(self, "_original_interface")
             and self._original_interface is not None

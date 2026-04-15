@@ -13,23 +13,14 @@ from typing import Any, Dict, List, Optional
 
 from .base import AsyncCallbackHandler
 
-# Import OTEL functions - these are available when cua-core[telemetry] is installed
-try:
-    from core.telemetry import (
-        create_span,
-        is_otel_enabled,
-        record_error,
-        record_operation,
-        record_tokens,
-        track_concurrent,
-    )
-
-    OTEL_AVAILABLE = True
-except ImportError:
-    OTEL_AVAILABLE = False
-
-    def is_otel_enabled() -> bool:
-        return False
+from cua_core.telemetry import (
+    create_span,
+    is_otel_enabled,
+    record_error,
+    record_operation,
+    record_tokens,
+    track_concurrent,
+)
 
 
 class OtelCallback(AsyncCallbackHandler):
@@ -75,7 +66,7 @@ class OtelCallback(AsyncCallbackHandler):
 
     async def on_run_start(self, kwargs: Dict[str, Any], old_items: List[Dict[str, Any]]) -> None:
         """Called at the start of an agent run loop."""
-        if not OTEL_AVAILABLE or not is_otel_enabled():
+        if not is_otel_enabled():
             return
 
         self.run_start_time = time.perf_counter()
@@ -89,7 +80,7 @@ class OtelCallback(AsyncCallbackHandler):
         new_items: List[Dict[str, Any]],
     ) -> None:
         """Called at the end of an agent run loop."""
-        if not OTEL_AVAILABLE or not is_otel_enabled():
+        if not is_otel_enabled():
             return
 
         if self.run_start_time is not None:
@@ -108,7 +99,7 @@ class OtelCallback(AsyncCallbackHandler):
 
     async def on_responses(self, kwargs: Dict[str, Any], responses: Dict[str, Any]) -> None:
         """Called when responses are received (each step)."""
-        if not OTEL_AVAILABLE or not is_otel_enabled():
+        if not is_otel_enabled():
             return
 
         self.step_count += 1
@@ -130,7 +121,7 @@ class OtelCallback(AsyncCallbackHandler):
 
     async def on_usage(self, usage: Dict[str, Any]) -> None:
         """Called when usage information is received."""
-        if not OTEL_AVAILABLE or not is_otel_enabled():
+        if not is_otel_enabled():
             return
 
         prompt_tokens = usage.get("prompt_tokens", 0)
@@ -145,14 +136,14 @@ class OtelCallback(AsyncCallbackHandler):
 
     async def on_computer_call_start(self, item: Dict[str, Any]) -> None:
         """Called when a computer call is about to start."""
-        if not OTEL_AVAILABLE or not is_otel_enabled():
+        if not is_otel_enabled():
             return
 
     async def on_computer_call_end(
         self, item: Dict[str, Any], result: List[Dict[str, Any]]
     ) -> None:
         """Called when a computer call has completed."""
-        if not OTEL_AVAILABLE or not is_otel_enabled():
+        if not is_otel_enabled():
             return
 
         action = item.get("action", {})
@@ -170,12 +161,12 @@ class OtelCallback(AsyncCallbackHandler):
 
     async def on_api_start(self, kwargs: Dict[str, Any]) -> None:
         """Called when an LLM API call is about to start."""
-        if not OTEL_AVAILABLE or not is_otel_enabled():
+        if not is_otel_enabled():
             return
 
     async def on_api_end(self, kwargs: Dict[str, Any], result: Any) -> None:
         """Called when an LLM API call has completed."""
-        if not OTEL_AVAILABLE or not is_otel_enabled():
+        if not is_otel_enabled():
             return
 
 
@@ -198,7 +189,7 @@ class OtelErrorCallback(AsyncCallbackHandler):
 
     async def on_error(self, error: Exception, context: Dict[str, Any]) -> None:
         """Called when an error occurs during agent execution."""
-        if not OTEL_AVAILABLE or not is_otel_enabled():
+        if not is_otel_enabled():
             return
 
         error_type = type(error).__name__

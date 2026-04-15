@@ -6,10 +6,14 @@ and operational metrics via OpenTelemetry.
 
 # OpenTelemetry instrumentation for Four Golden Signals
 from cua_core.telemetry.otel import (
+    StabilityTracker,
     create_span,
+    get_stability_tracker,
     instrument_async,
     instrument_sync,
     is_otel_enabled,
+    record_api_error,
+    record_api_request,
     record_error,
     record_operation,
     record_tokens,
@@ -35,4 +39,9 @@ __all__ = [
     "create_span",
     "instrument_async",
     "instrument_sync",
+    # Stability metrics
+    "record_api_request",
+    "record_api_error",
+    "StabilityTracker",
+    "get_stability_tracker",
 ]

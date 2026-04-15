@@ -2,12 +2,14 @@
 
 import hashlib
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
 import aiohttp
 from cua_core.http import cua_version_headers
+from cua_core.telemetry import get_stability_tracker, record_api_error, record_api_request
 from cua_cli.auth.store import require_api_key
 
 DEFAULT_API_BASE = "https://api.cua.ai"
@@ -50,16 +52,43 @@ class CloudAPIClient:
         if json is not None:
             headers["Content-Type"] = "application/json"
 
-        async with aiohttp.ClientSession() as session:
-            timeout_obj = aiohttp.ClientTimeout(total=timeout)
-            async with session.request(
-                method, url, headers=headers, json=json, timeout=timeout_obj
-            ) as resp:
-                try:
-                    data = await resp.json(content_type=None)
-                except Exception:
-                    data = await resp.text()
-                return resp.status, data
+        tracker = get_stability_tracker()
+        start_time = time.perf_counter()
+        status_code = 0
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                timeout_obj = aiohttp.ClientTimeout(total=timeout)
+                async with session.request(
+                    method, url, headers=headers, json=json, timeout=timeout_obj
+                ) as resp:
+                    status_code = resp.status
+                    try:
+                        data = await resp.json(content_type=None)
+                    except Exception:
+                        data = await resp.text()
+
+                    duration = time.perf_counter() - start_time
+                    is_success = 200 <= status_code < 400
+                    record_api_request(
+                        endpoint=path,
+                        method=method,
+                        status_code=status_code,
+                        duration_seconds=duration,
+                    )
+                    tracker.record(success=is_success, duration_seconds=duration)
+
+                    return status_code, data
+        except Exception as e:
+            duration = time.perf_counter() - start_time
+            record_api_error(
+                endpoint=path,
+                method=method,
+                error_type=type(e).__name__,
+                duration_seconds=duration,
+            )
+            tracker.record(success=False, duration_seconds=duration)
+            raise
 
     # Image API methods
 
