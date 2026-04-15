@@ -294,6 +294,15 @@ async def build_user_image(
         except Exception:
             pass
         await asyncio.sleep(10)
+    except Exception:
+        # Clean up the failed user image to avoid leaving corrupted/incomplete images
+        if user_path.exists():
+            user_path.unlink()
+            logger.warning(f"Deleted failed user image: {user_path}")
+        meta_path = user_path.with_suffix(".json")
+        if meta_path.exists():
+            meta_path.unlink()
+        raise
     finally:
         await runtime.stop(f"cua-build-{lhash}")
 

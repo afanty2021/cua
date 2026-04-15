@@ -322,6 +322,27 @@ def build_image(
     create_qcow2(disk_path, config.disk_size_gb)
 
     # Step 3: Run QEMU install
+    # Wrap in try/except to clean up disk on failure
+    try:
+        return _run_qemu_install(config, disk_path, work_dir, win_iso, virtio_iso, unattend_iso, use_wsl2)
+    except Exception:
+        # Clean up the failed/incomplete disk image
+        if disk_path.exists():
+            disk_path.unlink()
+            logger.warning(f"Deleted failed disk image: {disk_path}")
+        raise
+
+
+def _run_qemu_install(
+    config: QEMUImageConfig,
+    disk_path: Path,
+    work_dir: Path,
+    win_iso: Path,
+    virtio_iso: Path,
+    unattend_iso: Path,
+    use_wsl2: bool,
+) -> Path:
+    """Run the QEMU Windows install process. Separated to enable cleanup on failure."""
     logger.info("Starting unattended Windows install via QEMU...")
     logger.info("This will take 30-60 minutes. Monitor via VNC on port 5900.")
 
