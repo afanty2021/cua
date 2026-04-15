@@ -1031,6 +1031,7 @@ class Sandbox:
                     memory_mb=memory_mb,
                     disk_gb=disk_gb,
                     region=region,
+                    ephemeral=bool(ephemeral),
                 )
                 sb = cls(
                     transport, name=name, _ephemeral=ephemeral, _telemetry_enabled=telemetry_enabled
