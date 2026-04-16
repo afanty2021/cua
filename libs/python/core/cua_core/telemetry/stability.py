@@ -23,7 +23,6 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
 
 logger = logging.getLogger("core.telemetry.stability")
 
@@ -74,21 +73,27 @@ class _StabilityTracker:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._latency_target = float(
-            os.environ.get(
-                "CUA_LATENCY_TARGET_SECONDS",
-                str(DEFAULT_LATENCY_TARGET_SECONDS),
+        raw_latency_target = os.environ.get("CUA_LATENCY_TARGET_SECONDS")
+        try:
+            self._latency_target = (
+                float(raw_latency_target)
+                if raw_latency_target is not None
+                else DEFAULT_LATENCY_TARGET_SECONDS
             )
-        )
+        except (ValueError, TypeError):
+            logger.warning(
+                "Invalid CUA_LATENCY_TARGET_SECONDS=%r; using default %.1fs",
+                raw_latency_target,
+                DEFAULT_LATENCY_TARGET_SECONDS,
+            )
+            self._latency_target = DEFAULT_LATENCY_TARGET_SECONDS
         self._total = 0
         self._successful = 0
         self._failed = 0
         self._churned = 0
         self._latency_compliant = 0
         self._total_latency = 0.0
-        self._latencies: collections.deque[float] = collections.deque(
-            maxlen=_MAX_LATENCY_SAMPLES
-        )
+        self._latencies: collections.deque[float] = collections.deque(maxlen=_MAX_LATENCY_SAMPLES)
 
     def record(
         self,
@@ -202,6 +207,8 @@ def _report_on_exit() -> None:
             "sdk_stability_report",
             _snapshot_to_dict(snapshot),
         )
+        # Reset to avoid re-emitting the same data if called again
+        _tracker.reset()
     except Exception as e:
         logger.debug(f"Failed to report stability metrics on exit: {e}")
 
@@ -297,6 +304,8 @@ def report_stability() -> Dict[str, Any]:
 
         if is_telemetry_enabled():
             record_event("sdk_stability_report", metrics)
+            # Reset to avoid re-emitting overlapping totals on subsequent calls
+            _tracker.reset()
     except Exception as e:
         logger.debug(f"Failed to report stability metrics via PostHog: {e}")
 

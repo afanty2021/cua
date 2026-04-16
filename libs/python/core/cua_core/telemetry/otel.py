@@ -12,6 +12,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from functools import wraps
@@ -369,6 +370,24 @@ def record_tokens(
         logger.debug(f"Failed to record token metric: {e}")
 
 
+# Regex patterns for normalizing API paths to low-cardinality route templates.
+# Dynamic segments (e.g. VM names) are replaced with placeholders.
+_ROUTE_NORMALIZATION_PATTERNS = [
+    (re.compile(r"/v1/vms/[^/]+"), "/v1/vms/{name}"),
+]
+
+
+def _normalize_path(path: str) -> str:
+    """Normalize a URL path to a low-cardinality route template.
+
+    Replaces dynamic path segments (e.g. VM names) with placeholders to
+    prevent metric cardinality explosion per OpenTelemetry best practices.
+    """
+    for pattern, replacement in _ROUTE_NORMALIZATION_PATTERNS:
+        path = pattern.sub(replacement, path)
+    return path
+
+
 def record_http_request(
     method: str,
     url: str,
@@ -380,7 +399,7 @@ def record_http_request(
 
     Args:
         method: HTTP method (GET, POST, etc.)
-        url: Full request URL (path is extracted for the attribute)
+        url: Full request URL (path is normalized to a route template)
         status_code: HTTP response status code (0 if connection error)
         duration_seconds: Request duration in seconds
         error: Error type name if the request failed with an exception
@@ -389,11 +408,11 @@ def record_http_request(
         return
 
     parsed = urlparse(url)
-    endpoint = parsed.path or "/"
+    route = _normalize_path(parsed.path or "/")
 
     attributes: Dict[str, str] = {
         "http.method": method,
-        "http.endpoint": endpoint,
+        "http.route": route,
         "http.status_code": str(status_code),
     }
     if error:
