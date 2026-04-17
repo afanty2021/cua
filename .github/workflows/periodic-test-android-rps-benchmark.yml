@@ -1,0 +1,74 @@
+name: "Periodic: Test Android RPS Benchmark"
+
+on:
+  schedule:
+    - cron: "22/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      sandboxes:
+        description: "Number of Android sandboxes"
+        required: false
+        default: "2"
+        type: string
+      duration:
+        description: "Load-test duration in seconds"
+        required: false
+        default: "30"
+        type: string
+      action:
+        description: "Per-request action (screenshot | step)"
+        required: false
+        default: "screenshot"
+        type: string
+  pull_request:
+    paths:
+      - tests/android_rps_benchmark.py
+      - .github/workflows/periodic-test-android-rps-benchmark.yml
+
+jobs:
+  test:
+    name: Test Android RPS Benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install cua-sandbox
+
+      - name: Run benchmark
+        run: |
+          python tests/android_rps_benchmark.py \
+            --sandboxes ${{ github.event.inputs.sandboxes || '2' }} \
+            --duration ${{ github.event.inputs.duration || '30' }} \
+            --action ${{ github.event.inputs.action || 'screenshot' }} \
+            --parallel 1
+        env:
+          CUA_API_KEY: ${{ secrets.PERIODIC_TEST_CUA_API_KEY }}
+
+      - name: Alert Alertmanager on failure
+        if: failure()
+        run: |
+          curl -s -X POST https://am.cua.ai/api/v2/alerts \
+            -H 'Content-Type: application/json' \
+            -d '[{
+              "labels": {
+                "alertname": "PeriodicTestAndroidRpsBenchmarkFailed",
+                "severity": "critical",
+                "service": "cua-sdk",
+                "job": "periodic-test-android-rps-benchmark"
+              },
+              "annotations": {
+                "summary": "Periodic Android RPS benchmark test failed",
+                "description": "GitHub Actions workflow \"Periodic: Test Android RPS Benchmark\" failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                "dashboard": "https://github.com/${{ github.repository }}/actions/workflows/periodic-test-android-rps-benchmark.yml"
+              },
+              "generatorURL": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }]'
