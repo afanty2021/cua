@@ -19,75 +19,20 @@ state being required for a focused unit test.
 import asyncio
 
 import pytest
-
 from computer_server.handlers.base import BaseAutomationHandler
 
 
 class _MinimalHandler(BaseAutomationHandler):
-    """Concrete BaseAutomationHandler with the abstract methods stubbed out."""
+    """Concrete BaseAutomationHandler for exercising ``run_command`` only.
 
-    async def mouse_down(self, x=None, y=None, button="left"):  # pragma: no cover
-        return {}
+    We clear ``__abstractmethods__`` instead of stubbing every abstract
+    method — the set changes as the interface grows (``middle_click`` was
+    added after these tests were first written) and keeping a mirror of
+    the full abstract surface here is pure maintenance overhead for a
+    test that only touches ``run_command``.
+    """
 
-    async def mouse_up(self, x=None, y=None, button="left"):  # pragma: no cover
-        return {}
-
-    async def left_click(self, x=None, y=None):  # pragma: no cover
-        return {}
-
-    async def right_click(self, x=None, y=None):  # pragma: no cover
-        return {}
-
-    async def double_click(self, x=None, y=None):  # pragma: no cover
-        return {}
-
-    async def move_cursor(self, x, y):  # pragma: no cover
-        return {}
-
-    async def drag_to(self, x, y, button="left", duration=0.5):  # pragma: no cover
-        return {}
-
-    async def drag(self, path, button="left", duration=0.5):  # pragma: no cover
-        return {}
-
-    async def key_down(self, key):  # pragma: no cover
-        return {}
-
-    async def key_up(self, key):  # pragma: no cover
-        return {}
-
-    async def type_text(self, text):  # pragma: no cover
-        return {}
-
-    async def press_key(self, key):  # pragma: no cover
-        return {}
-
-    async def hotkey(self, *keys):  # pragma: no cover
-        return {}
-
-    async def scroll(self, x, y):  # pragma: no cover
-        return {}
-
-    async def scroll_down(self, clicks=1):  # pragma: no cover
-        return {}
-
-    async def scroll_up(self, clicks=1):  # pragma: no cover
-        return {}
-
-    async def get_cursor_position(self):  # pragma: no cover
-        return {}
-
-    async def get_screen_size(self):  # pragma: no cover
-        return {}
-
-    async def screenshot(self):  # pragma: no cover
-        return {}
-
-    async def copy_to_clipboard(self):  # pragma: no cover
-        return {}
-
-    async def set_clipboard(self, text):  # pragma: no cover
-        return {}
+    __abstractmethods__ = frozenset()
 
 
 class TestRunCommandTimeout:
