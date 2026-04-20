@@ -94,9 +94,8 @@ class HTTPTransport(Transport):
             if line.startswith("data: "):
                 payload = json.loads(line[6:])
                 if isinstance(payload, dict) and not payload.get("success", True):
-                    err = payload.get("error")
-                    if err:
-                        raise RuntimeError(f"Remote error: {err}")
+                    if "error" in payload:
+                        raise RuntimeError(f"Remote error: {payload['error']}")
                     # Shell-command shape: surface return_code/stderr/stdout.
                     parts = []
                     rc = payload.get("return_code")
