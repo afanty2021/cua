@@ -25,14 +25,21 @@ from computer_server.handlers.base import BaseAutomationHandler
 class _MinimalHandler(BaseAutomationHandler):
     """Concrete BaseAutomationHandler for exercising ``run_command`` only.
 
-    We clear ``__abstractmethods__`` instead of stubbing every abstract
-    method — the set changes as the interface grows (``middle_click`` was
-    added after these tests were first written) and keeping a mirror of
-    the full abstract surface here is pure maintenance overhead for a
-    test that only touches ``run_command``.
+    We clear ``__abstractmethods__`` AFTER class creation (below) instead
+    of stubbing every abstract method — the set changes as the interface
+    grows and keeping a mirror of the full abstract surface here is pure
+    maintenance overhead for a test that only touches ``run_command``.
+
+    Note: setting ``__abstractmethods__ = frozenset()`` inside the class
+    body does NOT work — Python's ``ABCMeta`` overwrites it during class
+    creation.  The override must happen after the class statement.
     """
 
-    __abstractmethods__ = frozenset()
+    pass
+
+
+# Bypass ABC enforcement — ABCMeta.__call__ checks this at instantiation time.
+_MinimalHandler.__abstractmethods__ = frozenset()
 
 
 class TestRunCommandTimeout:
