@@ -464,6 +464,7 @@ class CloudTransport(Transport):
                 "write_bytes",
                 path="/data/local/tmp/.cua_env",
                 content_b64=base64.b64encode(env_content.encode()).decode(),
+                timeout=30,
             )
             logger.debug("[cloud] wrote %d env vars to .cua_env", len(self._image._env))
 
@@ -499,6 +500,7 @@ class CloudTransport(Transport):
             "write_bytes",
             path=dest,
             content_b64=base64.b64encode(apk_bytes).decode(),
+            timeout=60,
         )
         await self._inner.send(
             "run_command",
@@ -553,6 +555,7 @@ class CloudTransport(Transport):
             "write_bytes",
             path=dest,
             content_b64=base64.b64encode(apk_bytes).decode(),
+            timeout=60,
         )
         logger.debug(f"[cloud] installing APK: pm install -r {dest}")
         await self._inner.send(
