@@ -18,9 +18,8 @@ from __future__ import annotations
 import pytest
 
 try:
-    from fastapi.testclient import TestClient
-
     from computer_server.main import _unavailable_status_code, app
+    from fastapi.testclient import TestClient
 except Exception as import_error:  # pragma: no cover - environment-dependent
     pytest.skip(
         f"computer_server.main unavailable in this environment: {import_error}",
