@@ -180,9 +180,7 @@ def run(config: TrainingConfig) -> None:
 
         # 4. Load traces from all rollout runs
         episodes = traces.load_runs(run_dirs)
-        
-        breakpoint()
-        
+
         if not episodes:
             print(f"[loop] No valid episodes across {len(run_dirs)} runs. Skipping epoch.")
             continue

@@ -16,7 +16,6 @@ These tests pin the new behavior:
 """
 
 import pytest
-
 from cua_sandbox.transport.http import HTTPTransport
 
 
