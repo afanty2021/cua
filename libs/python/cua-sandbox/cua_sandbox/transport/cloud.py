@@ -460,10 +460,13 @@ class CloudTransport(Transport):
             for k, v in self._image._env:
                 lines.append(f"export {k}={shlex.quote(v)}")
             env_content = "\n".join(lines) + "\n"
+            # Env payloads are tiny (tens of bytes); 30s is plenty even with
+            # adb socket contention on busy hosts.
             await self._inner.send(
                 "write_bytes",
                 path="/data/local/tmp/.cua_env",
                 content_b64=base64.b64encode(env_content.encode()).decode(),
+                timeout=30,
             )
             logger.debug("[cloud] wrote %d env vars to .cua_env", len(self._image._env))
 
@@ -495,10 +498,14 @@ class CloudTransport(Transport):
         else:
             apk_bytes = Path(apk).read_bytes()
 
+        # APKs can be multi-MB; give the push 60s headroom under matrix
+        # concurrency where adb socket throughput on a shared host is
+        # contended.
         await self._inner.send(
             "write_bytes",
             path=dest,
             content_b64=base64.b64encode(apk_bytes).decode(),
+            timeout=60,
         )
         await self._inner.send(
             "run_command",
@@ -549,10 +556,16 @@ class CloudTransport(Transport):
 
         apk_bytes = Path(apk_path).read_bytes()
         dest = "/data/local/tmp/cua_pwa.apk"
+        # WebAPKs built by pwa2apk are typically ~10 KB but the push itself
+        # serialises through adb's forwarded socket, which is contended on
+        # busy incus-2 hosts under the matrix test.  60s headroom matches
+        # the generic APK path and gives us slack without letting a truly
+        # stuck push block the full SDK budget.
         await self._inner.send(
             "write_bytes",
             path=dest,
             content_b64=base64.b64encode(apk_bytes).decode(),
+            timeout=60,
         )
         logger.debug(f"[cloud] installing APK: pm install -r {dest}")
         await self._inner.send(

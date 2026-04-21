@@ -797,8 +797,28 @@ class AndroidFileHandler(BaseFileHandler):
         else:
             raise RuntimeError(f"Failed to write file: {output}")
 
-    async def write_bytes(self, path: str, content_b64: str) -> Dict[str, Any]:
-        """Write binary content to file."""
+    async def write_bytes(
+        self, path: str, content_b64: str, timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Write binary content to file via ``adb push``.
+
+        Args:
+            path: Absolute path on the device (e.g. ``/data/local/tmp/foo.apk``).
+            content_b64: Base64-encoded file contents.
+            timeout: Optional timeout in seconds for the ``adb push`` call.
+                When ``None`` (default), falls back to
+                ``CommandExecutor``'s internal default (currently 10s).
+                SDK callers should pick a value sized to the expected
+                blob + concurrency conditions — a WebAPK push on an
+                incus-2 host running N android VMs competes for adb
+                forwarded-socket throughput and routinely needs 30-60s
+                under matrix load.
+
+        The parameter flows from ``sb.shell.run(...)``-style SDK callers
+        via computer-server's ``/cmd`` dispatcher (``inspect.signature``
+        filters kwargs; declaring ``timeout`` here lets the SDK pass it
+        through without changes at the dispatcher level).
+        """
         # Decode base64 and write to temp file, then push to device
         import os
         import tempfile
@@ -811,8 +831,14 @@ class AndroidFileHandler(BaseFileHandler):
             tmp_path = tmp.name
 
         try:
-            # Push file to device
-            success, output = await adb_exec.run("push", tmp_path, path, decode=True)
+            # Push file to device.  Pass timeout through only when set —
+            # adb_exec.run() has its own default that governs the unset case.
+            run_kwargs: Dict[str, Any] = {"decode": True}
+            if timeout is not None:
+                run_kwargs["timeout"] = timeout
+            success, output = await adb_exec.run(
+                "push", tmp_path, path, **run_kwargs
+            )
             if success:
                 return {}
             else:
