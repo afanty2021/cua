@@ -14,5 +14,6 @@ __all__ = [
 def __getattr__(name: str):
     if name in ("TrainingConfig", "run"):
         from .rl_loop import TrainingConfig, run
+
         return {"TrainingConfig": TrainingConfig, "run": run}[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

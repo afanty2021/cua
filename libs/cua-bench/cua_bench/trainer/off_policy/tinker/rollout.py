@@ -53,11 +53,18 @@ def _run_single_rollout(
     env = {**os.environ, **(extra_env or {})}
 
     cmd = [
-        "cb", "run", "dataset", str(tasks_path),
-        "--agent", agent,
-        "--model", model,
-        "--max-steps", str(max_steps),
-        "--with", "libs/python/agent/agent"
+        "cb",
+        "run",
+        "dataset",
+        str(tasks_path),
+        "--agent",
+        agent,
+        "--model",
+        model,
+        "--max-steps",
+        str(max_steps),
+        "--with",
+        "libs/python/agent/agent",
     ]
 
     print(f"[rollout] Launching: {' '.join(cmd)}")
@@ -114,8 +121,7 @@ def run_rollouts(
     poll_interval: int = 10,
     extra_env: dict[str, str] | None = None,
 ) -> list[tuple[str, Path]]:
-    """Run cua-bench rollouts and block until all sessions finish.
-    """
+    """Run cua-bench rollouts and block until all sessions finish."""
     results: list[tuple[str, Path]] = []
     for i in range(num_rollouts):
         if num_rollouts > 1:
