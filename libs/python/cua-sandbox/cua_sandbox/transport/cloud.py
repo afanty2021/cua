@@ -138,7 +138,9 @@ class CloudTransport(Transport):
             # snapshot, so auth must use the source instance name.
             snap_source = getattr(self._image, "_snapshot_source", None) if self._image else None
             auth_name = snap_source["instance"] if snap_source else self._name
-            self._inner = HTTPTransport(cs_url, api_key=api_key, container_name=auth_name, timeout=self._request_timeout)
+            self._inner = HTTPTransport(
+                cs_url, api_key=api_key, container_name=auth_name, timeout=self._request_timeout
+            )
             await self._inner.connect()
             await self._wait_for_server_ready()
 

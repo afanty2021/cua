@@ -430,9 +430,9 @@ class Sandbox:
             time_to_start: Max seconds to wait for the VM to become reachable
                 (default 600). Only applies to cloud sandboxes.
             request_timeout: Default HTTP request timeout in seconds for
-                commands sent to the computer-server (default 30). Individual
-                commands with a server-side timeout automatically extend the
-                client timeout to match.
+                commands sent to the computer-server (default 30, cloud only).
+                Individual commands with a server-side timeout automatically
+                extend the client timeout to match.
             telemetry_enabled: Set to False to disable telemetry for this instance.
 
         Example::
@@ -550,9 +550,9 @@ class Sandbox:
             time_to_start: Max seconds to wait for the VM to become reachable
                 (default 600). Only applies to cloud sandboxes.
             request_timeout: Default HTTP request timeout in seconds for
-                commands sent to the computer-server (default 30). Individual
-                commands with a server-side timeout automatically extend the
-                client timeout to match.
+                commands sent to the computer-server (default 30, cloud only).
+                Individual commands with a server-side timeout automatically
+                extend the client timeout to match.
 
         Example::
 
