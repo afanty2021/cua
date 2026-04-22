@@ -2,6 +2,9 @@
 
 cleanup() {
   echo "Received signal, shutting down gracefully..."
+  if [ -n "$WATCHER_PID" ]; then
+    kill "$WATCHER_PID" 2>/dev/null
+  fi
   if [ -n "$VM_PID" ]; then
     kill -TERM "$VM_PID" 2>/dev/null
     wait "$VM_PID" 2>/dev/null
@@ -56,13 +59,46 @@ if [ ! -f "$STORAGE/ubuntu.boot" ]; then
   fi
 fi
 
-# Start the VM in the background
+# Start the VM in the background, tee serial output to a log file for monitoring
+VM_SERIAL_LOG="/tmp/vm-serial.log"
 echo "Starting Ubuntu VM..."
-/usr/bin/tini -s /run/entry.sh &
+/usr/bin/tini -s /run/entry.sh 2>&1 | tee "$VM_SERIAL_LOG" &
 VM_PID=$!
 echo "Live stream accessible at localhost:8006"
 
+# Detect first-time golden image build (no installed disk yet)
+if [ ! -f "$STORAGE/ubuntu.boot" ]; then
+  echo "Building golden image for the first time — this may take ~15 minutes..."
+fi
+
 echo "Waiting for Ubuntu to boot and Cua computer-server to start..."
+
+# Background watcher: once OEM setup completes, SSH in and ensure cua-computer-server is running
+(
+  while true; do
+    if grep -q "OEM installation completed" "$VM_SERIAL_LOG" 2>/dev/null; then
+      echo "[watcher] OEM installation detected — ensuring cua-computer-server is running..."
+      # Give VNC/systemd a moment to settle
+      sleep 10
+      VM_SSH_IP="${VM_IP:-}"
+      if [ -z "$VM_SSH_IP" ]; then
+        VM_SSH_IP=$(ps aux | grep dnsmasq | grep -oP '(?<=--dhcp-range=)[0-9.]+' | head -1)
+      fi
+      if [ -n "$VM_SSH_IP" ]; then
+        sshpass -p 'cua' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+          cua@"$VM_SSH_IP" \
+          'sudo systemctl start cua-computer-server 2>/dev/null; sudo systemctl status cua-computer-server --no-pager' \
+          && echo "[watcher] cua-computer-server started via SSH" \
+          || echo "[watcher] SSH kick failed, service may self-recover via Restart=always"
+      else
+        echo "[watcher] Could not determine VM IP for SSH kick"
+      fi
+      break
+    fi
+    sleep 5
+  done
+) &
+WATCHER_PID=$!
 
 VM_IP=""
 while true; do

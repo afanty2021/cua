@@ -1,6 +1,6 @@
 FROM trycua/qemu-local:latest
 
-RUN apt-get update && apt-get install -y --no-install-recommends python3-websockify dos2unix aria2 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3-websockify dos2unix aria2 sshpass openssh-client && rm -rf /var/lib/apt/lists/*
 
 COPY src/vm/setup/. /oem/
 RUN find /oem -type f -name "*.sh" -exec dos2unix {} \;

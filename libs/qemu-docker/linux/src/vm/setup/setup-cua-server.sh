@@ -131,10 +131,10 @@ cat > "$START_SCRIPT" << 'EOF'
 PROJECT_DIR="/opt/cua-server"
 LOG_FILE="$PROJECT_DIR/server.log"
 
-# Wait for DISPLAY :1 to be ready (VNC may still be starting)
+# Wait for DISPLAY :1 to be ready (check X socket, not xdpyinfo which needs XAUTHORITY)
 echo "$(date '+%Y-%m-%d %H:%M:%S') Waiting for DISPLAY :1..." >> "$LOG_FILE"
 for i in $(seq 1 60); do
-    if DISPLAY=:1 xdpyinfo >/dev/null 2>&1; then
+    if test -S /tmp/.X11-unix/X1; then
         break
     fi
     sleep 2
@@ -183,8 +183,7 @@ log "Creating system systemd service for $USER_NAME..."
 sudo tee "/etc/systemd/system/$SERVICE_NAME.service" > /dev/null << EOF
 [Unit]
 Description=Cua Computer Server
-After=network.target cua-vncserver.service
-Wants=cua-vncserver.service
+After=network.target
 
 [Service]
 Type=simple
@@ -197,6 +196,7 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=$START_SCRIPT
 Restart=always
 RestartSec=5
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
