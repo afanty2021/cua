@@ -41,7 +41,7 @@ class CloudTransport(Transport):
         memory_mb: Optional[int] = None,
         disk_gb: Optional[int] = None,
         region: str = "us-east-1",
-        timeout: Optional[float] = None,
+        time_to_start: Optional[float] = None,
     ):
         self._name = name
         self._api_key_override = api_key
@@ -51,7 +51,7 @@ class CloudTransport(Transport):
         self._memory_mb = memory_mb
         self._disk_gb = disk_gb
         self._region = region
-        self._timeout = timeout if timeout is not None else _POLL_TIMEOUT
+        self._time_to_start = time_to_start if time_to_start is not None else _POLL_TIMEOUT
         self._inner: Optional[HTTPTransport] = None
         self._api_client: Optional[httpx.AsyncClient] = None
 
@@ -104,7 +104,7 @@ class CloudTransport(Transport):
             cs_url = ""
             is_running = vm_info.get("status") in ("running", "ready")
 
-            while elapsed < self._timeout:
+            while elapsed < self._time_to_start:
                 # Try to extract a direct-IP endpoint from current vm_info
                 try:
                     url = self._resolve_endpoint(vm_info)
@@ -123,7 +123,7 @@ class CloudTransport(Transport):
 
             if not is_running:
                 raise TimeoutError(
-                    f"VM {self._name!r} did not become running within {self._timeout}s "
+                    f"VM {self._name!r} did not become running within {self._time_to_start}s "
                     f"(last status: {vm_info.get('status')})"
                 )
             if not cs_url:
@@ -155,7 +155,7 @@ class CloudTransport(Transport):
             elapsed = 0.0
             is_running = vm_info.get("status") in ("running", "ready")
 
-            while elapsed < self._timeout:
+            while elapsed < self._time_to_start:
                 # Try to extract a direct-IP endpoint
                 try:
                     url = self._resolve_endpoint(vm_info)
@@ -180,7 +180,7 @@ class CloudTransport(Transport):
 
             if not is_running:
                 raise TimeoutError(
-                    f"VM {self._name!r} did not become running within {self._timeout}s "
+                    f"VM {self._name!r} did not become running within {self._time_to_start}s "
                     f"(last status: {vm_info.get('status')})"
                 )
             url = resolved_url or self._resolve_endpoint(vm_info)
@@ -377,9 +377,9 @@ class CloudTransport(Transport):
         """Poll until the VM status is 'running' (or 'ready')."""
         elapsed = 0.0
         while vm_info.get("status") not in ("running", "ready"):
-            if elapsed >= self._timeout:
+            if elapsed >= self._time_to_start:
                 raise TimeoutError(
-                    f"VM {self._name!r} did not become running within {self._timeout}s "
+                    f"VM {self._name!r} did not become running within {self._time_to_start}s "
                     f"(last status: {vm_info.get('status')})"
                 )
             await asyncio.sleep(_POLL_INTERVAL)
@@ -404,7 +404,7 @@ class CloudTransport(Transport):
 
         # Phase 1: wait for HTTP port to accept connections (fast — just needs
         # the Python process to start, not the emulator).
-        while elapsed < self._timeout:
+        while elapsed < self._time_to_start:
             try:
                 resp = await self._inner._client.get("/", timeout=2.0)
                 # Any response means the server is up
@@ -429,7 +429,7 @@ class CloudTransport(Transport):
             pass  # Fall through to Phase 2
 
         # Phase 2: wait for get_screen_size (needs emulator/display running)
-        while elapsed < self._timeout:
+        while elapsed < self._time_to_start:
             try:
                 await self._inner.get_screen_size()
                 return  # Fully ready
@@ -446,7 +446,7 @@ class CloudTransport(Transport):
                 await asyncio.sleep(_POLL_INTERVAL)
                 elapsed += _POLL_INTERVAL
         raise TimeoutError(
-            f"Computer-server for VM {self._name!r} not reachable within {self._timeout}s: {last_err}"
+            f"Computer-server for VM {self._name!r} not reachable within {self._time_to_start}s: {last_err}"
         )
 
     async def _apply_image_layers(self) -> None:

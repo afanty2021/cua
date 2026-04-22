@@ -407,7 +407,7 @@ class Sandbox:
         memory_mb: Optional[int] = None,
         disk_gb: Optional[int] = None,
         region: str = "us-east-1",
-        timeout: Optional[float] = None,
+        time_to_start: Optional[float] = None,
         telemetry_enabled: bool = True,
     ) -> "Sandbox":
         """Provision a new persistent sandbox and return it connected.
@@ -426,7 +426,7 @@ class Sandbox:
             memory_mb: Memory in MB for the cloud sandbox.
             disk_gb: Disk size in GB for the cloud sandbox.
             region: Cloud region (default ``"us-east-1"``).
-            timeout: Max seconds to wait for the VM to become reachable
+            time_to_start: Max seconds to wait for the VM to become reachable
                 (default 600). Only applies to cloud sandboxes.
             telemetry_enabled: Set to False to disable telemetry for this instance.
 
@@ -448,7 +448,7 @@ class Sandbox:
             memory_mb=memory_mb,
             disk_gb=disk_gb,
             region=region,
-            timeout=timeout,
+            time_to_start=time_to_start,
             telemetry_enabled=telemetry_enabled,
         )
 
@@ -525,7 +525,7 @@ class Sandbox:
         memory_mb: Optional[int] = None,
         disk_gb: Optional[int] = None,
         region: str = "us-east-1",
-        timeout: Optional[float] = None,
+        time_to_start: Optional[float] = None,
         telemetry_enabled: bool = True,
     ) -> AsyncIterator["Sandbox"]:
         """Create an ephemeral sandbox that is automatically destroyed on exit.
@@ -540,7 +540,7 @@ class Sandbox:
             memory_mb: Memory in MB for the cloud sandbox.
             disk_gb: Disk size in GB for the cloud sandbox.
             region: Cloud region (default ``"us-east-1"``).
-            timeout: Max seconds to wait for the VM to become reachable
+            time_to_start: Max seconds to wait for the VM to become reachable
                 (default 600). Only applies to cloud sandboxes.
 
         Example::
@@ -560,7 +560,7 @@ class Sandbox:
             memory_mb=memory_mb,
             disk_gb=disk_gb,
             region=region,
-            timeout=timeout,
+            time_to_start=time_to_start,
             telemetry_enabled=telemetry_enabled,
         )
         try:
@@ -974,7 +974,7 @@ class Sandbox:
         memory_mb: Optional[int] = None,
         disk_gb: Optional[int] = None,
         region: str = "us-east-1",
-        timeout: Optional[float] = None,
+        time_to_start: Optional[float] = None,
         telemetry_enabled: bool = True,
     ) -> "Sandbox":
         """Internal workhorse — all public factories delegate here."""
@@ -1040,7 +1040,7 @@ class Sandbox:
                     memory_mb=memory_mb,
                     disk_gb=disk_gb,
                     region=region,
-                    timeout=timeout,
+                    time_to_start=time_to_start,
                 )
                 sb = cls(
                     transport, name=name, _ephemeral=ephemeral, _telemetry_enabled=telemetry_enabled
