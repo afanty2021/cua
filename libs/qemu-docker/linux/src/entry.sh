@@ -12,6 +12,50 @@ cleanup() {
 # Install trap for signals
 trap cleanup SIGTERM SIGINT SIGHUP SIGQUIT
 
+# Download Ubuntu ISO to /storage (persistent volume) if no disk installed yet.
+# install.sh will find it there via the storage fallback path.
+UBUNTU_ISO_URL="${UBUNTU_ISO_URL:-https://old-releases.ubuntu.com/releases/24.04.2/ubuntu-24.04.2-live-server-amd64.iso}"
+UBUNTU_ISO_FILENAME=$(basename "$UBUNTU_ISO_URL")
+UBUNTU_CHECKSUMS_URL="${UBUNTU_ISO_URL%/*}/SHA256SUMS"
+STORAGE="${STORAGE:-/storage}"
+if [ ! -f "$STORAGE/ubuntu.boot" ]; then
+  echo "Fetching official SHA256 checksum..."
+  UBUNTU_ISO_SHA256=$(curl -sL "$UBUNTU_CHECKSUMS_URL" | grep " \*${UBUNTU_ISO_FILENAME}$" | awk '{print $1}')
+  if [ -z "$UBUNTU_ISO_SHA256" ]; then
+    echo "ERROR: Could not fetch SHA256 for $UBUNTU_ISO_FILENAME from $UBUNTU_CHECKSUMS_URL"
+    exit 1
+  fi
+  echo "Expected SHA256: $UBUNTU_ISO_SHA256"
+  ISO_VALID=false
+  if [ -f "$STORAGE/ubuntu-source.iso" ]; then
+    echo "Verifying existing ISO checksum..."
+    ACTUAL_SHA=$(sha256sum "$STORAGE/ubuntu-source.iso" | awk '{print $1}')
+    if [ "$ACTUAL_SHA" = "$UBUNTU_ISO_SHA256" ]; then
+      ISO_VALID=true
+      echo "ISO checksum OK."
+    else
+      echo "ISO checksum mismatch (got $ACTUAL_SHA), re-downloading..."
+      rm -f "$STORAGE/ubuntu-source.iso"
+    fi
+  fi
+  if [ "$ISO_VALID" = false ]; then
+    echo "Downloading Ubuntu ISO to $STORAGE/ubuntu-source.iso ..."
+    aria2c -x 16 -s 16 -c -o "$STORAGE/ubuntu-source.iso" "$UBUNTU_ISO_URL" || {
+      echo "ERROR: Failed to download Ubuntu ISO from $UBUNTU_ISO_URL"
+      rm -f "$STORAGE/ubuntu-source.iso"
+      exit 1
+    }
+    echo "Verifying downloaded ISO checksum..."
+    ACTUAL_SHA=$(sha256sum "$STORAGE/ubuntu-source.iso" | awk '{print $1}')
+    if [ "$ACTUAL_SHA" != "$UBUNTU_ISO_SHA256" ]; then
+      echo "ERROR: ISO checksum mismatch after download (got $ACTUAL_SHA)"
+      rm -f "$STORAGE/ubuntu-source.iso"
+      exit 1
+    fi
+    echo "Ubuntu ISO downloaded and verified."
+  fi
+fi
+
 # Start the VM in the background
 echo "Starting Ubuntu VM..."
 /usr/bin/tini -s /run/entry.sh &
@@ -22,6 +66,14 @@ echo "Waiting for Ubuntu to boot and Cua computer-server to start..."
 
 VM_IP=""
 while true; do
+  # Exit immediately if VM process has died
+  if ! kill -0 "$VM_PID" 2>/dev/null; then
+    wait "$VM_PID"
+    VM_EXIT=$?
+    echo "ERROR: VM process exited with code $VM_EXIT. Aborting."
+    exit "$VM_EXIT"
+  fi
+
   # Wait for VM and get the IP
   if [ -z "$VM_IP" ]; then
     VM_IP=$(ps aux | grep dnsmasq | grep -oP '(?<=--dhcp-range=)[0-9.]+' | head -1)
@@ -46,8 +98,23 @@ while true; do
 done
 
 echo "VM is up and running, and the Cua Computer Server is ready!"
-
 echo "Computer server accessible at localhost:5000"
+
+# Redirect noVNC (port 8006) from QEMU framebuffer to TigerVNC inside the VM
+# We use port 5701 to avoid conflicting with QEMU's built-in websocket on 5700,
+# then update nginx to proxy /websockify to 5701 instead.
+echo "Redirecting noVNC to TigerVNC at ${VM_IP}:5900..."
+websockify 5701 "${VM_IP}:5900" &
+# Remove QEMU's generated /run/shm/index.html which hardcodes a websocket
+# connection to the QEMU framebuffer VNC on port 5700. Without it, nginx falls
+# through to the @vnc location serving /usr/share/novnc/vnc.html, which connects
+# to /websockify — our websockify proxy to TigerVNC inside the VM.
+rm -f /run/shm/index.html
+# The nginx config is installed from web.conf into sites-enabled/web.conf.
+# Patch /websockify proxy from QEMU's port 5700 to our websockify port 5701.
+sed -i 's|proxy_pass http://127.0.0.1:5700/;|proxy_pass http://127.0.0.1:5701/;|' /etc/nginx/sites-enabled/web.conf 2>/dev/null || true
+nginx -s reload 2>/dev/null || true
+echo "noVNC now shows TigerVNC desktop"
 
 # Detect initial setup by presence of custom ISO
 CUSTOM_ISO=$(find / -maxdepth 1 -type f -iname "*.iso" -print -quit 2>/dev/null || true)
