@@ -305,16 +305,17 @@ Two orthogonal axes shape what the agent can do.
 
 | `capture_mode` | `get_window_state` returns | Use for actions |
 |---|---|---|
-| **`vision`** (default) | PNG only (no tree) | pixel only — see [SCREENSHOT.md](./SCREENSHOT.md) |
+| **`som`** (default) | tree + screenshot | `element_index` preferred; pixel fallback |
 | **`ax`** | tree only (no PNG) | `element_index` only |
-| **`som`** | tree + screenshot | `element_index` preferred; pixel fallback |
+| **`vision`** | PNG only (no tree) | pixel only — see [SCREENSHOT.md](./SCREENSHOT.md) |
 
 `vision` was renamed from `screenshot` — the old name still decodes
 as a deprecated alias, so an on-disk `"capture_mode": "screenshot"`
-keeps working. Default flipped from `som` to `vision` because most
-real use-cases reason image-first; AX is opt-in via `som` or `ax`.
-Note the tool named `screenshot` is separate (raw PNG, no AX walk)
-and unrelated to the capture mode.
+keeps working. Default is `som` so element_index clicks work the
+first time a user calls `get_window_state`; the other modes are
+opt-in when the caller specifically doesn't want one half of the
+work. Note the tool named `screenshot` is separate (raw PNG, no AX
+walk) and unrelated to the capture mode.
 
 When a snapshot looks wrong (tiny screenshot / empty tree), check
 `cua-driver get_config` for `capture_mode` before anything else.

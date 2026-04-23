@@ -102,11 +102,11 @@ also invoke it explicitly:
   reused across turns, or across different windows of the same app.
   Call `get_window_state({pid, window_id})` first in the same turn,
   with the same window_id you're about to act against.
-- Empty `tree_markdown` → expected in the default `vision`
-  capture_mode; flip to `som` (`cua-driver config set capture_mode
-  som`) if you need AX. Tiny screenshot → likely a stale window
-  capture. See "Behavior matrix" in SKILL.md for the full mode
-  table.
+- Empty `tree_markdown` → `capture_mode` is set to `vision`, which
+  skips the AX walk by design. Flip back to the default `som`
+  (`cua-driver config set capture_mode som`) to get the tree.
+  Tiny screenshot → likely a stale window capture. See "Behavior
+  matrix" in SKILL.md for the full mode table.
 - System-alert beep when pressing Return on a minimized Chrome
   omnibox → the keyboard-commit-on-minimized limitation. Use
   `set_value` on the field instead, or AX-click a Go/Submit button.

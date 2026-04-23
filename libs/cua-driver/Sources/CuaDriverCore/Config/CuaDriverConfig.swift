@@ -25,11 +25,12 @@ public struct CuaDriverConfig: Codable, Sendable, Equatable {
     public var agentCursor: AgentCursorConfig
 
     /// Shapes what `get_window_state` returns on each snapshot.
-    /// `.vision` (default) returns the window PNG only — skips the AX
-    /// walk entirely for vision-first VLM agents. `.ax` returns the AX
-    /// tree only (no PNG, no screen-capture call) for pure
-    /// element_index workflows. `.som` ("set of marks") returns both
-    /// tree + screenshot, matching the historical pre-`vision` default.
+    /// `.som` ("set of marks", default) returns tree + screenshot so
+    /// element_index clicks work out of the box and the screenshot is
+    /// there for disambiguation. `.vision` returns the window PNG only
+    /// — skips the AX walk entirely for vision-first VLM agents that
+    /// don't use element_index. `.ax` returns the AX tree only (no PNG,
+    /// no screen-capture call) for pure element_index workflows.
     public var captureMode: CaptureMode
 
     /// Anonymous telemetry opt-out. Default `true` (opt-in) to match
@@ -70,7 +71,7 @@ public struct CuaDriverConfig: Codable, Sendable, Equatable {
     public init(
         schemaVersion: Int = 1,
         agentCursor: AgentCursorConfig = .default,
-        captureMode: CaptureMode = .vision,
+        captureMode: CaptureMode = .som,
         telemetryEnabled: Bool = true,
         autoUpdateEnabled: Bool = true,
         maxImageDimension: Int = CuaDriverConfig.defaultMaxImageDimension
@@ -112,7 +113,7 @@ public struct CuaDriverConfig: Codable, Sendable, Equatable {
         self.captureMode =
             (try? container.decode(
                 CaptureMode.self, forKey: .captureMode
-            )) ?? .vision
+            )) ?? .som
         self.telemetryEnabled =
             (try? container.decode(Bool.self, forKey: .telemetryEnabled)) ?? true
         self.autoUpdateEnabled =
@@ -132,14 +133,16 @@ public struct CuaDriverConfig: Codable, Sendable, Equatable {
 /// AX-indexed element overlay; each mode lets token-cost-sensitive
 /// workflows opt out of one half of the work.
 ///
-///   - `vision` — window PNG only (default); `tree_markdown`,
-///     `element_count`, and `turn_id` omitted from the response and
-///     the AX walk is skipped entirely. Formerly named `screenshot`
-///     (the raw string `"screenshot"` still decodes to `.vision` for
-///     on-disk config back-compat).
+///   - `som`    — both tree + screenshot (default). Element-indexed
+///     clicks work out of the box and the screenshot is there for
+///     disambiguation when labels repeat.
+///   - `vision` — window PNG only; `tree_markdown`, `element_count`,
+///     and `turn_id` omitted from the response and the AX walk is
+///     skipped entirely. Formerly named `screenshot` (the raw string
+///     `"screenshot"` still decodes to `.vision` for on-disk config
+///     back-compat).
 ///   - `ax`     — AX tree only; the `screenshot_*` fields are omitted
 ///     and the screen-capture call is skipped entirely.
-///   - `som`    — both tree + screenshot (historical default).
 public enum CaptureMode: String, Codable, Sendable, Equatable, CaseIterable {
     case vision
     case ax

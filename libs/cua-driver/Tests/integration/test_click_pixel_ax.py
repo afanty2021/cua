@@ -105,12 +105,12 @@ class ClickPixelAxHitTestTests(unittest.TestCase):
         self._client_cm.__exit__(None, None, None)
 
     def test_pixel_click_dispatches_via_ax_hit_test(self) -> None:
-        # The AX hit-test path is gated on `capture_mode != vision`
-        # — in `vision` mode (the shipped default) pixel clicks
-        # intentionally go straight to CGEvent / SkyLight because no
-        # AX walk has populated the hit-test cache. Force `som`
-        # (tree + screenshot) so this assertion doesn't flap based on
-        # whatever capture_mode the previous session left on disk.
+        # The AX hit-test path is gated on `capture_mode != vision` —
+        # in `vision` mode pixel clicks intentionally go straight to
+        # CGEvent / SkyLight because no AX walk has populated the
+        # hit-test cache. Force `som` (tree + screenshot, the shipped
+        # default) so this assertion doesn't flap based on whatever
+        # capture_mode the previous session left on disk.
         set_mode = self.client.call_tool(
             "set_config", {"key": "capture_mode", "value": "som"}
         )

@@ -47,12 +47,16 @@ public enum GetWindowStateTool {
                 without the filter.
 
                 Response shape is controlled by the persistent
-                `capture_mode` config setting (default `vision`). Each
+                `capture_mode` config setting (default `som`). Each
                 mode skips the half of the work it doesn't need — not
                 just the half of the response. Note that `vision` names
                 the capture MODE; the separate `screenshot` tool (which
                 captures a raw PNG without walking AX) is unrelated and
                 keeps its name:
+                  - `som`    — walks AX tree AND captures screenshot
+                               (default). Element-indexed clicks work
+                               out of the box; screenshot is there for
+                               disambiguation.
                   - `vision` — captures the window PNG; AX tree walk
                                is skipped entirely (no Accessibility
                                hit, no element_index cache update).
@@ -67,8 +71,6 @@ public enum GetWindowStateTool {
                   - `ax`     — walks AX tree; screen-capture call is
                                skipped entirely (no Screen Recording
                                hit). `screenshot_*` fields omitted.
-                  - `som`    — walks AX tree AND captures screenshot
-                               (historical default).
                 Change with `cua-driver config set capture_mode <mode>` or
                 the `set_config` tool.
 
