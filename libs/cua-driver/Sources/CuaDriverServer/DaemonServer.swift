@@ -22,6 +22,11 @@ public actor DaemonServer {
     private var pipeWriteFD: Int32 = -1
     private var running: Bool = true
     private var shutdownContinuation: CheckedContinuation<Void, Never>?
+    // Retained DispatchSourceSignal handles for SIGINT/SIGTERM. Dispatch
+    // sources stop firing the instant they're deallocated, so we hold them
+    // here for the daemon's lifetime. The process exits when run() returns,
+    // at which point the OS reclaims these; no explicit .cancel() needed.
+    private var signalSources: [any DispatchSourceSignal] = []
 
     public init(
         socketPath: String = DaemonPaths.defaultSocketPath(),
@@ -182,15 +187,31 @@ public actor DaemonServer {
     }
 
     private func installSignalHandlers() {
-        let handler: @convention(c) (Int32) -> Void = { _ in
-            // Signal handlers can't call into the actor safely. Hand off
-            // to a Task so the actual shutdown runs in Swift-concurrency
-            // land, where close(listenFD) is safe.
-            Task.detached { await DaemonSignal.fireShutdown() }
-        }
-        signal(SIGINT, handler)
-        signal(SIGTERM, handler)
+        // SIGPIPE stays ignored — we need write() to return EPIPE, not
+        // get interrupted by a signal handler.
         signal(SIGPIPE, SIG_IGN)
+
+        // Mask SIGINT/SIGTERM from default delivery so DispatchSource is
+        // the only consumer. Without this, libdispatch and the default
+        // handler both race for the signal.
+        signal(SIGINT, SIG_IGN)
+        signal(SIGTERM, SIG_IGN)
+
+        // DispatchSourceSignal fires its event handler on the given queue,
+        // OUTSIDE the POSIX signal-handler context. That makes it safe to
+        // call into Swift concurrency (Task.detached, actors) from the
+        // handler — unlike a raw `signal()` C-convention handler, where
+        // Swift runtime calls are undefined behavior.
+        let queue = DispatchQueue.global(qos: .userInitiated)
+        for sig in [SIGINT, SIGTERM] {
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: queue)
+            source.setEventHandler {
+                Task.detached { await DaemonSignal.fireShutdown() }
+            }
+            source.resume()
+            signalSources.append(source)
+        }
+
         DaemonSignal.register(self)
     }
 
