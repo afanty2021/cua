@@ -17,6 +17,7 @@ import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
+import Metal
 import os
 
 public enum RecordingRendererError: Error, CustomStringConvertible, Sendable {
@@ -74,15 +75,22 @@ public enum RecordingRenderer {
         /// milliseconds, not wall-clock; a 30fps input with
         /// `progressIntervalMs = 1000` means "every ~30 frames".
         public let progressIntervalMs: Double
+        /// When true (default), use action spans from the trajectory to
+        /// drive variable-speed rendering (1× inside spans, 5× outside)
+        /// and window-bbox zoom. Falls back to legacy click-zoom at 1×
+        /// speed when no action spans are present in the recording.
+        public let enableSpeedZones: Bool
 
         public init(
             noZoom: Bool = false,
             defaultScale: Double = 2.0,
-            progressIntervalMs: Double = 1000
+            progressIntervalMs: Double = 1000,
+            enableSpeedZones: Bool = true
         ) {
             self.noZoom = noZoom
             self.defaultScale = defaultScale
             self.progressIntervalMs = progressIntervalMs
+            self.enableSpeedZones = enableSpeedZones
         }
     }
 
@@ -103,17 +111,10 @@ public enum RecordingRenderer {
     ) async throws -> Int {
         // --- Load trajectory + session metadata --------------------------
         let (metadata, clicks, cursorSamples) = try TrajectoryLoader.load(from: inputDirectory)
-
-        let regions: [ZoomRegion]
-        if options.noZoom {
-            regions = []
-        } else {
-            regions = ZoomRegionGenerator.generate(
-                clicks: clicks,
-                cursorSamples: cursorSamples,
-                defaultScale: options.defaultScale
-            )
-        }
+        let rawActionSpans = TrajectoryLoader.loadActionSpans(from: inputDirectory)
+        let actionSpans = options.enableSpeedZones && !rawActionSpans.isEmpty
+            ? ActionSpanGenerator.generate(from: rawActionSpans)
+            : []
 
         let videoURL = inputDirectory.appendingPathComponent("recording.mp4")
 
@@ -143,6 +144,28 @@ public enum RecordingRenderer {
         let outputWidth = metadata.videoWidth > 0 ? metadata.videoWidth : Int(naturalSize.width)
         let outputHeight = metadata.videoHeight > 0 ? metadata.videoHeight : Int(naturalSize.height)
         let frameSize = CGSize(width: outputWidth, height: outputHeight)
+        // Use the recorded display scale factor to convert screen points → video
+        // pixels. Defaults to 1.0 for older recordings without this field.
+        let pointsToPixels = metadata.displayScaleFactor > 0 ? metadata.displayScaleFactor : 1.0
+
+        // --- Build zoom regions -------------------------------------------
+        // When action spans are present (new recordings with window_bounds),
+        // derive zoom regions from them: each span zooms to its target
+        // window with eased in/out transitions. Otherwise fall back to the
+        // legacy click-event zoom.
+        let regions: [ZoomRegion]
+        if options.noZoom {
+            regions = []
+        } else if !actionSpans.isEmpty {
+            regions = zoomRegions(from: actionSpans, frameSize: frameSize,
+                                  pointsToPixels: pointsToPixels, defaultScale: options.defaultScale)
+        } else {
+            regions = ZoomRegionGenerator.generate(
+                clicks: clicks,
+                cursorSamples: cursorSamples,
+                defaultScale: options.defaultScale
+            )
+        }
 
         let reader: AVAssetReader
         do {
@@ -237,10 +260,9 @@ public enum RecordingRenderer {
         // focus offset that's off by 2× — acceptable for a preview and
         // documented as the first follow-up.
         //
-        // TODO: embed screen scale factor in session.json so the
-        // renderer doesn't have to guess. Then the math becomes
-        // `pointsToPixels = session.displayScale`.
-        let pointsToPixels: Double = 2.0
+        // `pointsToPixels` is now read from `session.json` (set above from
+        // `metadata.displayScaleFactor`). Kept as a local so the render loop
+        // captures it without re-reading the outer `pointsToPixels` binding.
 
         // --- Render loop -------------------------------------------------
         // Pin CIContext color pipeline to sRGB so the CoreImage transform
@@ -248,11 +270,21 @@ public enum RecordingRenderer {
         // with the Rec.709 tags on the writer input, the full path stays
         // tagged end-to-end (source → CIImage → pixel buffer → MP4).
         let srgb = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-        let ciContext = CIContext(options: [
-            .useSoftwareRenderer: false,
-            .workingColorSpace: srgb,
-            .outputColorSpace: srgb,
-        ])
+        // Use a Metal-backed CIContext to keep all frame processing on the GPU,
+        // eliminating the CPU↔GPU round-trips that cause laggy zoom transitions.
+        let ciContext: CIContext
+        if let metalDevice = MTLCreateSystemDefaultDevice() {
+            ciContext = CIContext(mtlDevice: metalDevice, options: [
+                .workingColorSpace: srgb,
+                .outputColorSpace: srgb,
+            ])
+        } else {
+            ciContext = CIContext(options: [
+                .useSoftwareRenderer: false,
+                .workingColorSpace: srgb,
+                .outputColorSpace: srgb,
+            ])
+        }
 
         // Hand-off queue the writer expects its input to be fed from.
         // Realtime flag is off (we're batching), so we rely on
@@ -270,6 +302,7 @@ public enum RecordingRenderer {
             cursorSamples: cursorSamples,
             frameSize: frameSize,
             pointsToPixels: pointsToPixels,
+            actionSpans: actionSpans,
             progress: progress,
             progressIntervalMs: options.progressIntervalMs
         )
@@ -300,6 +333,9 @@ private final class RenderLoopState: @unchecked Sendable {
     private let cursorSamples: [CursorSample]
     private let frameSize: CGSize
     private let pointsToPixels: Double
+    /// Merged, padded action spans used for variable-speed + window zoom.
+    /// Empty when the recording pre-dates window_bounds / speed-zone support.
+    private let actionSpans: [ActionSpan]
     private let progress: RecordingRendererProgress?
     private let progressIntervalMs: Double
 
@@ -323,6 +359,7 @@ private final class RenderLoopState: @unchecked Sendable {
         cursorSamples: [CursorSample],
         frameSize: CGSize,
         pointsToPixels: Double,
+        actionSpans: [ActionSpan],
         progress: RecordingRendererProgress?,
         progressIntervalMs: Double
     ) {
@@ -336,6 +373,7 @@ private final class RenderLoopState: @unchecked Sendable {
         self.cursorSamples = cursorSamples
         self.frameSize = frameSize
         self.pointsToPixels = pointsToPixels
+        self.actionSpans = actionSpans
         self.progress = progress
         self.progressIntervalMs = progressIntervalMs
     }
@@ -364,16 +402,7 @@ private final class RenderLoopState: @unchecked Sendable {
                 }
 
                 let frameCountAtFinish = frameIndex
-                // `AVAssetWriter` is `NS_SWIFT_NONSENDABLE`, so
-                // escaping it into the `finishWriting` @Sendable
-                // closure below produces a warning the project-level
-                // `@unchecked Sendable` on `RenderLoopState` can't
-                // silence. The capture is safe here: `self.writer`
-                // is touched only at end-of-render on a single
-                // actor-serialized path, and `finishWriting` is
-                // AVFoundation's own completion callback — the
-                // framework owns the cross-thread transition.
-                nonisolated(unsafe) let capturedWriter = self.writer
+                let capturedWriter = self.writer
                 capturedWriter.finishWriting { [log] in
                     if capturedWriter.status == .completed {
                         continuation.resume(returning: frameCountAtFinish)
@@ -422,6 +451,24 @@ private final class RenderLoopState: @unchecked Sendable {
         pts: CMTime,
         tMs: Double
     ) throws {
+        // --- PTS remapping (variable speed) ----------------------------------
+        // When action spans are available, remap the presentation timestamp
+        // so segments inside spans play at 1× and segments outside play at
+        // 5×. For 1×-span frames the PTS is shifted (no scale change); for
+        // 5×-fast frames the PTS is compressed. The mapping is monotonically
+        // increasing so the encoder always sees valid PTS order.
+        let outPts: CMTime
+        if !actionSpans.isEmpty {
+            let outMs = ActionSpanGenerator.mapPts(tMs, spans: actionSpans)
+            outPts = CMTimeMake(value: Int64(outMs.rounded()), timescale: 1000)
+        } else {
+            outPts = pts
+        }
+
+        // --- Zoom curve sampling ---------------------------------------------
+        // Use the pre-built zoom regions (derived from action spans or legacy
+        // clicks). `sampleCurve` returns eased (scale, focusX, focusY) in
+        // screen-point space; multiply by pointsToPixels for FrameTransform.
         let curve = ZoomRegionGenerator.sampleCurve(
             atMs: tMs,
             regions: regions,
@@ -462,9 +509,80 @@ private final class RenderLoopState: @unchecked Sendable {
             colorSpace: nil
         )
 
-        if !adaptor.append(out, withPresentationTime: pts) {
+        if !adaptor.append(out, withPresentationTime: outPts) {
             let err = writer.error?.localizedDescription ?? "unknown"
             throw RecordingRendererError.encodeFailed("adaptor.append failed: \(err)")
         }
+    }
+}
+
+// MARK: - Span → ZoomRegion conversion
+
+/// Build `ZoomRegion`s from merged action spans so the existing
+/// `ZoomRegionGenerator.sampleCurve` machinery produces eased zoom
+/// transitions to / from each window's bounding box.
+///
+/// - Spans without `windowBounds` are silently dropped (no window
+///   to zoom into; the video stays at scale 1.0 during that span).
+/// - Scale is computed as the largest factor that fits the window
+///   inside the frame while maintaining aspect ratio (letterbox).
+/// - Zoom-in and zoom-out transitions use 400 ms, which sits
+///   comfortably inside the ±1 s padding ActionSpanGenerator adds.
+private func zoomRegions(
+    from spans: [ActionSpan],
+    frameSize: CGSize,
+    pointsToPixels: Double,
+    defaultScale: Double = 2.0
+) -> [ZoomRegion] {
+    return spans.compactMap { span -> ZoomRegion? in
+        // Waypoints are already in screen points (clickPoint / window centre);
+        // no pointsToPixels here — the renderer multiplies at sample time.
+        let waypoints = span.focusWaypoints
+
+        // Try window-bbox fit first: largest scale that fits the window exactly.
+        // Focus is the window centre in screen points; FrameTransform clamps the
+        // crop to the video boundary, which centres the window as much as possible
+        // without going off the edge of the display (letterbox case).
+        if let wb = span.windowBounds {
+            let winWPx = (wb.width + 32) * pointsToPixels
+            let winHPx = (wb.height + 32) * pointsToPixels
+            if winWPx > 0, winHPx > 0 {
+                let scale = min(
+                    Double(frameSize.width) / winWPx,
+                    Double(frameSize.height) / winHPx
+                )
+                if scale > 1.0 {
+                    let focusX = wb.x + wb.width / 2
+                    let focusY = wb.y + wb.height / 2
+                    // Don't pass waypoints here: scale exactly fits the window,
+                    // so any focus deviation from the window centre clips an edge.
+                    // focusX/Y (window centre) is already the right target.
+                    return ZoomRegion(
+                        startMs: span.startMs,
+                        endMs: span.endMs,
+                        focusX: focusX,
+                        focusY: focusY,
+                        scale: scale,
+                        zoomInDurationMs: ZoomDefaults.zoomInWindowMs,
+                        zoomOutDurationMs: ZoomDefaults.transitionWindowMs,
+                        waypoints: nil
+                    )
+                }
+            }
+        }
+        // Fallback: window absent or fills/exceeds frame. Zoom to click point.
+        if let cp = span.clickPoint {
+            return ZoomRegion(
+                startMs: span.startMs,
+                endMs: span.endMs,
+                focusX: cp.x,
+                focusY: cp.y,
+                scale: defaultScale,
+                zoomInDurationMs: ZoomDefaults.zoomInWindowMs,
+                zoomOutDurationMs: ZoomDefaults.transitionWindowMs,
+                waypoints: waypoints
+            )
+        }
+        return nil
     }
 }

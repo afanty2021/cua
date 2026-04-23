@@ -20,11 +20,17 @@ public struct SessionMetadata: Sendable, Equatable {
     /// Total number of cursor samples written. Informational only —
     /// the renderer decides from the loaded `[CursorSample]` itself.
     public let cursorSampleCount: Int
+    /// Backing scale factor of the main display at recording time
+    /// (e.g. 1.0 for non-Retina, 2.0 for Retina). Used by the renderer
+    /// to convert screen points → video pixels. Defaults to 1.0 for
+    /// recordings made before this field was added.
+    public let displayScaleFactor: Double
 
-    public init(videoWidth: Int, videoHeight: Int, cursorSampleCount: Int) {
+    public init(videoWidth: Int, videoHeight: Int, cursorSampleCount: Int, displayScaleFactor: Double = 1.0) {
         self.videoWidth = videoWidth
         self.videoHeight = videoHeight
         self.cursorSampleCount = cursorSampleCount
+        self.displayScaleFactor = displayScaleFactor
     }
 }
 
@@ -103,11 +109,14 @@ public enum TrajectoryLoader {
         let cursor = dict["cursor"] as? [String: Any]
         let sampleCount = (cursor?["sample_count"] as? Int)
             ?? Int(cursor?["sample_count"] as? Double ?? 0)
+        let displayScaleFactor = (dict["display_scale_factor"] as? Double)
+            ?? Double(dict["display_scale_factor"] as? Int ?? 1)
 
         return SessionMetadata(
             videoWidth: width,
             videoHeight: height,
-            cursorSampleCount: sampleCount
+            cursorSampleCount: sampleCount,
+            displayScaleFactor: displayScaleFactor
         )
     }
 
@@ -229,6 +238,83 @@ public enum TrajectoryLoader {
         default:
             return false
         }
+    }
+
+    // MARK: - turn-*/action.json → ActionSpans
+
+    /// Walk every `turn-*/action.json` and project all action-class turns
+    /// into `ActionSpan`s (one per turn). Unlike `loadClicks`, this
+    /// includes keyboard / scroll / set_value turns — anything that mutates
+    /// UI state and was recorded with `t_start_ms_from_session_start`.
+    public static func loadActionSpans(from directory: URL) -> [ActionSpan] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var spans: [ActionSpan] = []
+        for entry in entries {
+            guard entry.lastPathComponent.hasPrefix("turn-") else { continue }
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDir),
+                  isDir.boolValue else { continue }
+
+            let actionURL = entry.appendingPathComponent("action.json")
+            if let span = parseActionSpan(at: actionURL) {
+                spans.append(span)
+            }
+        }
+        return spans.sorted { $0.startMs < $1.startMs }
+    }
+
+    private static func isClickOrTypeClassTool(_ name: String) -> Bool {
+        switch name {
+        case "click", "double_click", "right_click", "type_text", "type_text_chars":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func parseActionSpan(at url: URL) -> ActionSpan? {
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let dict = obj as? [String: Any] else { return nil }
+
+        // Only click/type-class actions get normal-speed spans; other agent
+        // actions (scroll, hotkey, press_key, etc.) are fast-forwarded.
+        guard let tool = dict["tool"] as? String,
+              isClickOrTypeClassTool(tool) else { return nil }
+
+        // Require an end timestamp so we can place the span on the timeline.
+        guard let endMs = doubleValue(dict["t_ms_from_session_start"]) else { return nil }
+        let startMs = doubleValue(dict["t_start_ms_from_session_start"]) ?? endMs
+
+        let windowBounds: WindowBounds?
+        if let wb = dict["window_bounds"] as? [String: Any],
+           let x = doubleValue(wb["x"]),
+           let y = doubleValue(wb["y"]),
+           let w = doubleValue(wb["width"]),
+           let h = doubleValue(wb["height"]),
+           w > 0, h > 0
+        {
+            windowBounds = WindowBounds(x: x, y: y, width: w, height: h)
+        } else {
+            windowBounds = nil
+        }
+
+        let clickPoint: ClickPoint?
+        if let cp = dict["click_point"] as? [String: Any],
+           let cx = doubleValue(cp["x"]),
+           let cy = doubleValue(cp["y"])
+        {
+            clickPoint = ClickPoint(x: cx, y: cy)
+        } else {
+            clickPoint = nil
+        }
+
+        return ActionSpan(startMs: startMs, endMs: endMs, windowBounds: windowBounds, clickPoint: clickPoint)
     }
 
     // MARK: - helpers

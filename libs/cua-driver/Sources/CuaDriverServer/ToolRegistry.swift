@@ -54,6 +54,11 @@ public struct ToolRegistry: Sendable {
         guard let handler = handlers[name] else {
             throw MCPError.invalidParams("Unknown tool: \(name)")
         }
+        // Capture monotonic start time before any animation or side-effect
+        // so the recorded span brackets the full action duration.
+        let actionStartNs: UInt64 = Self.actionToolNames.contains(name)
+            ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0
+
         let result = try await handler.invoke(arguments)
 
         // Recording hook — runs AFTER the tool's invoke. Errors inside
@@ -81,7 +86,8 @@ public struct ToolRegistry: Sendable {
                 arguments: snapshotArguments(arguments),
                 pid: pid,
                 clickPoint: clickPoint,
-                resultSummary: firstTextContent(of: result)
+                resultSummary: firstTextContent(of: result),
+                actionStartNs: actionStartNs
             )
         }
 

@@ -119,10 +119,16 @@ public enum SetRecordingTool {
                 return errorResult(
                     "Failed to disable recording: \(error.localizedDescription)")
             }
+            let renderedSuffix: String
+            if let rendered = await RecordingSession.shared.lastAutoRenderURL {
+                renderedSuffix = " Rendered: \(rendered.path)"
+            } else {
+                renderedSuffix = ""
+            }
             return CallTool.Result(
                 content: [
                     .text(
-                        text: "✅ Recording disabled.",
+                        text: "✅ Recording disabled.\(renderedSuffix)",
                         annotations: nil,
                         _meta: nil
                     )

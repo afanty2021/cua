@@ -28,6 +28,10 @@ public actor RecordingSession {
     /// when `videoExperimental = true` — the render-with-zoom pipeline is
     /// the sole consumer. Nil otherwise.
     private var cursorSampler: CursorSampler?
+    /// URL of the most recently auto-rendered post-processed video (written
+    /// by `teardownSession` when `videoExperimental` is true). Nil if no
+    /// auto-render has run yet or the last render failed.
+    public private(set) var lastAutoRenderURL: URL? = nil
     /// Monotonic anchor for this session. Captured at configure-on time
     /// and reused for `cursor.jsonl` `t_ms` + every turn's new
     /// `t_ms_from_session_start` field on `action.json`. Zero when no
@@ -191,6 +195,29 @@ public actor RecordingSession {
             )
         }
 
+        // Auto post-process: render the raw capture into a zoom-on-click MP4
+        // saved next to recording.mp4 as recording_rendered.mp4.
+        if let dir = priorDir, priorVideoExperimental {
+            let renderedURL = dir.appendingPathComponent("recording_rendered.mp4")
+            log.info(
+                "auto-rendering \(dir.path, privacy: .public) -> recording_rendered.mp4"
+            )
+            do {
+                try await RecordingRenderer.render(from: dir, to: renderedURL)
+                lastAutoRenderURL = renderedURL
+                log.info(
+                    "auto-render complete: \(renderedURL.path, privacy: .public)"
+                )
+            } catch {
+                lastAutoRenderURL = nil
+                log.error(
+                    "auto-render failed: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        } else {
+            lastAutoRenderURL = nil
+        }
+
         sessionStartMonotonicNs = 0
         sessionStartWallClock = nil
         sessionVideoExperimental = false
@@ -199,12 +226,17 @@ public actor RecordingSession {
     /// Record a single turn. No-op when disabled. Never throws — every
     /// failure inside is logged and swallowed so the action loop stays
     /// on its happy path.
+    ///
+    /// `actionStartNs` is the `CLOCK_UPTIME_RAW` timestamp captured
+    /// **before** the tool's animation ran; 0 means "unknown" and falls
+    /// back to the end timestamp for both start and end fields.
     public func record(
         toolName: String,
         arguments: [String: Any],
         pid: pid_t?,
         clickPoint: CGPoint?,
-        resultSummary: String
+        resultSummary: String,
+        actionStartNs: UInt64 = 0
     ) async {
         guard enabled, let root = outputDirectory else { return }
 
@@ -231,7 +263,8 @@ public actor RecordingSession {
             arguments: arguments,
             pid: pid,
             clickPoint: clickPoint,
-            resultSummary: resultSummary
+            resultSummary: resultSummary,
+            actionStartNs: actionStartNs
         )
 
         // AX snapshot — only when we have a pid to target.
@@ -279,7 +312,8 @@ public actor RecordingSession {
         arguments: [String: Any],
         pid: pid_t?,
         clickPoint: CGPoint?,
-        resultSummary: String
+        resultSummary: String,
+        actionStartNs: UInt64 = 0
     ) {
         // `timestamp` stays on the existing ISO-8601 wall-clock format —
         // other consumers (replay tooling, users reading turn folders
@@ -288,10 +322,15 @@ public actor RecordingSession {
         // frames, so we add a sibling `t_ms_from_session_start` computed
         // off the same anchor `session.json` + `cursor.jsonl` use.
         let nowNs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        let anchor = sessionStartMonotonicNs
         let tMsFromSessionStart: Int =
-            sessionStartMonotonicNs > 0 && nowNs >= sessionStartMonotonicNs
-            ? Int((nowNs - sessionStartMonotonicNs) / 1_000_000)
+            anchor > 0 && nowNs >= anchor
+            ? Int((nowNs - anchor) / 1_000_000)
             : 0
+        let tStartMsFromSessionStart: Int =
+            anchor > 0 && actionStartNs >= anchor
+            ? Int((actionStartNs - anchor) / 1_000_000)
+            : tMsFromSessionStart
 
         var payload: [String: Any] = [
             "tool": toolName,
@@ -299,8 +338,22 @@ public actor RecordingSession {
             "result_summary": resultSummary,
             "timestamp": ISO8601DateFormatter().string(from: Date()),
             "t_ms_from_session_start": tMsFromSessionStart,
+            "t_start_ms_from_session_start": tStartMsFromSessionStart,
         ]
-        if let pid { payload["pid"] = Int(pid) }
+        if let pid {
+            payload["pid"] = Int(pid)
+            // Record the frontmost window bounds so the render pipeline can
+            // zoom to the target window without needing screen recording to
+            // re-analyze the video. This query is best-effort (post-action)
+            // — the window rarely moves during an action.
+            if let win = WindowEnumerator.frontmostWindow(forPid: pid) {
+                let b = win.bounds
+                payload["window_bounds"] = [
+                    "x": b.x, "y": b.y,
+                    "width": b.width, "height": b.height,
+                ]
+            }
+        }
         if let clickPoint {
             payload["click_point"] = [
                 "x": clickPoint.x,
@@ -453,9 +506,11 @@ public actor RecordingSession {
             "sample_hz": 60,
             "sample_count": cursorSampleCount,
         ]
+        let displayScaleFactor = ScreenInfo.mainScreenSize()?.scaleFactor ?? 1.0
 
         return [
             "schema_version": Self.sessionJSONSchemaVersion,
+            "display_scale_factor": displayScaleFactor,
             "started_at_wall_clock": isoFormatter.string(from: startedAtWallClock),
             "started_at_monotonic_ns": startedAtMonotonicNs,
             "ended_at_monotonic_ns": endedAtMonotonicNs,
