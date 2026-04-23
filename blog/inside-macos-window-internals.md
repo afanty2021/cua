@@ -2,7 +2,7 @@
 
 _Published on April 23, 2026 by Francesco Bonacci_
 
-![Cua Driver — background any computer-use agent](TODO_IMAGE_URL__hero)
+![Cua Driver — background any computer-use agent](https://github.com/user-attachments/assets/5e5acd7e-ac02-4f50-be76-0c997152d635)
 
 **TL;DR:**
 - `cua-driver` is an open-source macOS driver that lets any agent (Claude Code, Codex, your own harness) drive any Mac app in the background.
@@ -26,9 +26,9 @@ A background computer-use driver should be a commodity, not a feature of one age
 
 I figured this would take a weekend (it kinda did plus a couple more days of plumbing!) What we actually needed was a private Apple framework called SkyLight: the undocumented C layer WindowServer uses to drive every window on your screen.
 
-![SkyLight sits between AppKit and the HID event stream — SLEventPostToPid bypasses IOHIDPostEvent to reach a specific pid without moving the shared cursor](TODO_IMAGE_URL__skylight_architecture)
+![SkyLight sits between AppKit and the HID event stream — SLEventPostToPid bypasses IOHIDPostEvent to reach a specific pid without moving the shared cursor](https://github.com/user-attachments/assets/97051c9a-f0c9-400f-b34d-478f647d8ec4)
 
- SkyLight is where the interesting stuff is. `SLEventPostToPid` posts synthesized events to one specific process without going through the HID tap. `SLPSPostEventRecordTo` flips a window's AppKit-active state without raising it. `_AXObserverAddNotificationAndCheckRemote` keeps Electron apps' accessibility trees alive when their windows are occluded.
+SkyLight is where the interesting stuff is. `SLEventPostToPid` posts synthesized events to one specific process without going through the HID tap. `SLPSPostEventRecordTo` flips a window's AppKit-active state without raising it. `_AXObserverAddNotificationAndCheckRemote` keeps Electron apps' accessibility trees alive when their windows are occluded.
 
 None of this is documented. Half of it doesn't even appear in any Apple header. I learned about it by reading [yabai's source](https://github.com/koekeishiya/yabai), poking at Chrome's event filter with lldb, and writing a lot of Swift that crashed in informative ways.
 
@@ -60,7 +60,7 @@ I found the function by grepping SkyLight's symbol exports. It doesn't appear in
 
 ## The primer click
 
-![Two clicks, one the renderer drops, one it trusts — the (-1, -1) decoy ticks Chromium's user-activation gate so the real click lands as a trusted continuation](TODO_IMAGE_URL__primer_click_sequence)
+![Two clicks, one the renderer drops, one it trusts — the (-1, -1) decoy ticks Chromium's user-activation gate so the real click lands as a trusted continuation](https://github.com/user-attachments/assets/0b52bbef-9150-4eb6-b534-dc835a3ceb27)
 
 Even with SkyLight, one more thing breaks: Chromium's user-activation gate. If the event arrives through the right trust envelope but the renderer hasn't seen a recent "trusted user gesture," the gate refuses to let the click activate things like video play/pause, `window.open`, or the fullscreen API.
 
@@ -98,33 +98,29 @@ Four things that only work because the driver behaves like a second cursor on my
 
 **1. Dev-loop QA with a real agent.**
 
-<!-- VIDEO: Claude Code orchestrating a feedback dev loop. Upload bg-cua-qa-compressed.mp4 and replace the src URL below. -->
-<div align="center"><video src="TODO_VIDEO_URL__bg_cua_qa" width="600" controls></video></div>
+<div align="center"><video src="https://github.com/user-attachments/assets/c81cac3c-4693-408d-bb9e-870e6a337db0" width="600" controls></video></div>
 
 An agent harness running a repro-fix-verify cycle while I keep typing in the editor. Claude Code drives the target app via cua-driver, reads the pixels, reads the AX tree, edits source, rebuilds, checks the screenshot. Your agent harness never loses focus - and your scroll position never changes. I find out the fix worked because the agent tells me.
 
 **2. Messages I would have forgotten.**
 
-<!-- VIDEO: Claude Code pinging a contact in Messages in the background, foreground editor stays frontmost. Upload bg-cua-imessage-compressed.mp4 and replace the src URL below. -->
-<div align="center"><video src="TODO_VIDEO_URL__bg_cua_imessage" width="600" controls></video></div>
+<div align="center"><video src="https://github.com/user-attachments/assets/c4c27bd7-3e96-429a-868e-0485e89e70c6" width="600" controls></video></div>
 
-Light personal-assistant work. Sending a message, checking a calendar, pulling a tracking number out of an email. The interesting property here is not that an agent can do these things. Agents have been able to send iMessages for a year. The interesting property is that the screen you're reading does not change while it happens.
+Light personal-assistant work. Sending a message, checking a calendar, pulling a tracking number out of an email. Agents have been able to send iMessages for a year but the interesting property is that the screen you're reading does not change while it happens.
 
 **3. Pulling visual context from apps I'm not looking at.**
 
-<!-- VIDEO: Claude Code playing a YouTube scene in Chrome, fullscreen, while the editor stays frontmost. Upload bg-cua-yt-compressed.mp4 and replace the src URL below. -->
-<div align="center"><video src="TODO_VIDEO_URL__bg_cua_yt" width="600" controls></video></div>
+<div align="center"><video src="https://github.com/user-attachments/assets/9c7db52b-63b3-42b0-bcd3-d29659048d84" width="600" controls></video></div>
 
 Claude Code reading what's on a Figma canvas, what's in a Preview window, what's on a YouTube page, without bringing any of those forward. The backgrounded pixel-click recipe is what makes YouTube's fullscreen toggle land on a window we never raised.
 
 **4. Delegating demo capture.**
 
-<!-- VIDEO: cua-driver recording a product demo, ScreenStudio-style zoom-on-click, fully backgrounded. Upload bg-cua-record-compressed.mp4 and replace the src URL below. -->
-<div align="center"><video src="TODO_VIDEO_URL__bg_cua_record" width="600" controls></video></div>
+<div align="center"><video src="https://github.com/user-attachments/assets/d5b80bad-bd4f-4690-9512-7b4a7cd44f13" width="600" controls></video></div>
 
 Imagine asking an agent to record a product demo video for you. The agent drives the app being demoed, records the trajectory, and cua-driver renderer zooms on each click at export. Because the clicks are backgrounded, the cursor the driver paints is the only cursor in the final video.
 
-## What's still broken (yet)
+## What's still broken
 
 Two things the SkyLight recipe doesn't fix.
 
@@ -161,4 +157,4 @@ cua-driver launch_app '{"bundle_id":"com.apple.calculator"}'
 cua-driver click '{"pid":1234,"window_id":5678,"element_index":14}'
 ```
 
-v0.1. MIT. macOS 14+. Source and issues at [github.com/trycua/cua](https://github.com/trycua/cua). I'd especially love to hear how you end up using this. The weirdest use cases are the ones we haven't thought of yet.
+Source and issues at [github.com/trycua/cua](https://github.com/trycua/cua). I'd especially love to hear how you end up using this. ***The weirdest use cases are the ones we haven't thought of yet.***
