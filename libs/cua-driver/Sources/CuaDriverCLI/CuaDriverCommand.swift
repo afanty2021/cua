@@ -298,23 +298,32 @@ enum AppKitBootstrap {
     static func runBlockingAppKitWith(
         _ work: @Sendable @escaping () async throws -> Void
     ) {
-        NSApplication.shared.setActivationPolicy(.accessory)
+        // Swift 6.1's strict-concurrency rejects direct calls to
+        // `NSApplication.shared` / `setActivationPolicy` / `.run()`
+        // from a nonisolated context. Callers are all CLI entry
+        // points running on the main thread (they've already dropped
+        // into synchronous `main()` or ArgumentParser's nonisolated
+        // `run()` path), so we assert that with `MainActor.assumeIsolated`
+        // rather than ripple `@MainActor` through every caller chain.
+        MainActor.assumeIsolated {
+            NSApplication.shared.setActivationPolicy(.accessory)
 
-        Task.detached(priority: .userInitiated) {
-            do {
-                try await work()
-            } catch AppKitBootstrapError.permissionsDenied {
-                // Already logged by the caller; skip the generic
-                // "cua-driver: <error>" line to avoid duplicating.
-            } catch {
-                FileHandle.standardError.write(
-                    Data("cua-driver: \(error)\n".utf8)
-                )
+            Task.detached(priority: .userInitiated) {
+                do {
+                    try await work()
+                } catch AppKitBootstrapError.permissionsDenied {
+                    // Already logged by the caller; skip the generic
+                    // "cua-driver: <error>" line to avoid duplicating.
+                } catch {
+                    FileHandle.standardError.write(
+                        Data("cua-driver: \(error)\n".utf8)
+                    )
+                }
+                await MainActor.run { NSApp.terminate(nil) }
             }
-            await MainActor.run { NSApp.terminate(nil) }
-        }
 
-        NSApplication.shared.run()
+            NSApplication.shared.run()
+        }
     }
 }
 
