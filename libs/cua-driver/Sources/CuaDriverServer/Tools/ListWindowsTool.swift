@@ -80,7 +80,17 @@ public enum ListWindowsTool {
             )
         ),
         invoke: { arguments in
-            let pidFilter = arguments?["pid"]?.intValue.map { Int32($0) }
+            let pidFilter: Int32?
+            if let rawPid = arguments?["pid"]?.intValue {
+                guard let validated = Int32(exactly: rawPid) else {
+                    return errorResult(
+                        "pid \(rawPid) is outside the supported Int32 range."
+                    )
+                }
+                pidFilter = validated
+            } else {
+                pidFilter = nil
+            }
             let onScreenOnly = arguments?["on_screen_only"]?.boolValue ?? false
 
             let raw = onScreenOnly
@@ -177,6 +187,13 @@ public enum ListWindowsTool {
             case windows
             case currentSpaceId = "current_space_id"
         }
+    }
+
+    private static func errorResult(_ message: String) -> CallTool.Result {
+        CallTool.Result(
+            content: [.text(text: message, annotations: nil, _meta: nil)],
+            isError: true
+        )
     }
 
     private static func summary(
