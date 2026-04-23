@@ -47,7 +47,7 @@ const docsSites = [
     href: '/cua-driver/guide/getting-started/introduction',
     prefix: '/cua-driver',
     isDefault: false,
-    description: 'Background computer-use driver for any agent',
+    description: 'Background computer-use',
     logoBlack: CuaDriverIconBlack,
     logoWhite: CuaDriverIconWhite,
     iconWidth: 24,
