@@ -108,7 +108,10 @@ public enum RightClickTool {
             guard let rawPid = arguments?["pid"]?.intValue else {
                 return errorResult("Missing required integer field pid.")
             }
-            let pid = Int32(rawPid)
+            guard let pid = Int32(exactly: rawPid) else {
+                return errorResult(
+                    "pid \(rawPid) is outside the supported Int32 range.")
+            }
 
             let elementIndex = arguments?["element_index"]?.intValue
             let rawWindowId = arguments?["window_id"]?.intValue
@@ -140,13 +143,24 @@ public enum RightClickTool {
                 $0.stringValue
             } ?? []
 
-            if let index = elementIndex, let rawWindowId {
+            let windowId: UInt32?
+            if let rawWindowId {
+                guard let checked = UInt32(exactly: rawWindowId) else {
+                    return errorResult(
+                        "window_id \(rawWindowId) is outside the supported UInt32 range.")
+                }
+                windowId = checked
+            } else {
+                windowId = nil
+            }
+
+            if let index = elementIndex, let windowId {
                 return await performElementRightClick(
-                    pid: pid, windowId: UInt32(rawWindowId), index: index)
+                    pid: pid, windowId: windowId, index: index)
             }
             return await performPixelRightClick(
                 pid: pid,
-                windowId: rawWindowId.map { UInt32($0) },
+                windowId: windowId,
                 x: x!, y: y!, modifiers: modifiers)
         }
     )

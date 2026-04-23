@@ -66,7 +66,10 @@ public enum TypeTextCharsTool {
                 return errorResult("Missing required string field text.")
             }
             let delayMs = arguments?["delay_ms"]?.intValue ?? 30
-            let pid = Int32(rawPid)
+            guard let pid = Int32(exactly: rawPid) else {
+                return errorResult(
+                    "pid \(rawPid) is outside the supported Int32 range.")
+            }
 
             do {
                 try KeyboardInput.typeCharacters(

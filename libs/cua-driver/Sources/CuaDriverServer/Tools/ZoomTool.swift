@@ -85,7 +85,10 @@ public enum ZoomTool {
             guard let rawPid = arguments?["pid"]?.intValue else {
                 return errorResult("Missing required integer field pid.")
             }
-            let pid = Int32(rawPid)
+            guard let pid = Int32(exactly: rawPid) else {
+                return errorResult(
+                    "pid \(rawPid) is outside the supported Int32 range.")
+            }
 
             guard let x1 = coerceDouble(arguments?["x1"]),
                   let y1 = coerceDouble(arguments?["y1"]),

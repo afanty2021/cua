@@ -54,8 +54,14 @@ public enum SetValueTool {
                 return errorResult("Missing required string field value.")
             }
 
-            let pid = Int32(rawPid)
-            let windowId = UInt32(rawWindowId)
+            guard let pid = Int32(exactly: rawPid) else {
+                return errorResult(
+                    "pid \(rawPid) is outside the supported Int32 range.")
+            }
+            guard let windowId = UInt32(exactly: rawWindowId) else {
+                return errorResult(
+                    "window_id \(rawWindowId) is outside the supported UInt32 range.")
+            }
             do {
                 let element = try await AppStateRegistry.engine.lookup(
                     pid: pid,

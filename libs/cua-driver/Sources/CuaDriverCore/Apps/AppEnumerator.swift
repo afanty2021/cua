@@ -45,7 +45,7 @@ public enum AppEnumerator {
             for window in windows {
                 guard let rawPid = window[kCGWindowOwnerPID as String] as? Int
                 else { continue }
-                let pid = Int32(rawPid)
+                guard let pid = Int32(exactly: rawPid) else { continue }
                 guard !seenPids.contains(pid) else { continue }
                 guard
                     let app = NSRunningApplication(processIdentifier: pid),

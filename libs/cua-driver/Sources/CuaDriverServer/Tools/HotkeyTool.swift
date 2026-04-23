@@ -56,7 +56,10 @@ public enum HotkeyTool {
             guard keys.count == raw.count, !keys.isEmpty else {
                 return errorResult("keys must be a non-empty array of strings.")
             }
-            let pid = Int32(rawPid)
+            guard let pid = Int32(exactly: rawPid) else {
+                return errorResult(
+                    "pid \(rawPid) is outside the supported Int32 range.")
+            }
             do {
                 try KeyboardInput.hotkey(keys, toPid: pid)
                 return CallTool.Result(

@@ -135,7 +135,10 @@ public enum ClickTool {
             guard let rawPid = arguments?["pid"]?.intValue else {
                 return errorResult("Missing required integer field pid.")
             }
-            let pid = Int32(rawPid)
+            guard let pid = Int32(exactly: rawPid) else {
+                return errorResult(
+                    "pid \(rawPid) is outside the supported Int32 range.")
+            }
 
             let elementIndex = arguments?["element_index"]?.intValue
             let rawWindowId = arguments?["window_id"]?.intValue
@@ -195,16 +198,27 @@ public enum ClickTool {
                 }
             }
 
-            if let index = elementIndex, let rawWindowId {
+            let windowId: UInt32?
+            if let rawWindowId {
+                guard let checked = UInt32(exactly: rawWindowId) else {
+                    return errorResult(
+                        "window_id \(rawWindowId) is outside the supported UInt32 range.")
+                }
+                windowId = checked
+            } else {
+                windowId = nil
+            }
+
+            if let index = elementIndex, let windowId {
                 return await performElementClick(
                     pid: pid,
-                    windowId: UInt32(rawWindowId),
+                    windowId: windowId,
                     index: index,
                     actionName: actionName ?? "press")
             }
             return await performPixelClick(
                 pid: pid,
-                windowId: rawWindowId.map { UInt32($0) },
+                windowId: windowId,
                 x: x!,
                 y: y!,
                 count: count,

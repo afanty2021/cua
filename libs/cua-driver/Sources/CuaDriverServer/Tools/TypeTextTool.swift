@@ -80,7 +80,10 @@ public enum TypeTextTool {
             }
             let elementIndex = arguments?["element_index"]?.intValue
             let rawWindowId = arguments?["window_id"]?.intValue
-            let pid = Int32(rawPid)
+            guard let pid = Int32(exactly: rawPid) else {
+                return errorResult(
+                    "pid \(rawPid) is outside the supported Int32 range.")
+            }
             if elementIndex != nil && rawWindowId == nil {
                 return errorResult(
                     "window_id is required when element_index is used — the "
@@ -90,9 +93,13 @@ public enum TypeTextTool {
 
             do {
                 if let index = elementIndex, let rawWindowId {
+                    guard let windowId = UInt32(exactly: rawWindowId) else {
+                        return errorResult(
+                            "window_id \(rawWindowId) is outside the supported UInt32 range.")
+                    }
                     let element = try await AppStateRegistry.engine.lookup(
                         pid: pid,
-                        windowId: UInt32(rawWindowId),
+                        windowId: windowId,
                         elementIndex: index)
                     try await AppStateRegistry.focusGuard.withFocusSuppressed(
                         pid: pid, element: element
