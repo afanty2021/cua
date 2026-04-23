@@ -402,7 +402,16 @@ private final class RenderLoopState: @unchecked Sendable {
                 }
 
                 let frameCountAtFinish = frameIndex
-                let capturedWriter = self.writer
+                // `AVAssetWriter` is not `Sendable` under Swift 6, so
+                // escaping it into the `finishWriting` @Sendable
+                // closure below produces a warning the project-level
+                // `@unchecked Sendable` on `RenderLoopState` can't
+                // silence. The capture is safe here: `self.writer`
+                // is touched only at end-of-render on a single
+                // actor-serialized path, and `finishWriting` is
+                // AVFoundation's own completion callback — the
+                // framework owns the cross-thread transition.
+                nonisolated(unsafe) let capturedWriter = self.writer
                 capturedWriter.finishWriting { [log] in
                     if capturedWriter.status == .completed {
                         continuation.resume(returning: frameCountAtFinish)
