@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import SwiftUI
 
 /// Named color stop for the agent-cursor's axial stroke gradient.
 /// Pairing color + location keeps the spec's lavender stops grep-able
@@ -182,10 +183,9 @@ public final class AgentCursor {
     /// follow-up action to arrive without the overlay popping in and
     /// out, while still being short enough that the cursor is gone
     /// before the user starts wondering if the agent is still running.
-    public var idleHideDelay: TimeInterval = 3.0
+    public var idleHideDelay: TimeInterval = 8.0
 
     private var overlay: AgentCursorOverlayWindow?
-    private var view: AgentCursorView?
     private var idleHideTask: Task<Void, Never>?
 
     /// CGWindowID of the target window the overlay is currently
@@ -244,14 +244,12 @@ public final class AgentCursor {
         if !enabled {
             cancelIdleHide()
             hide()
-            view?.cursorLayer.removeAllAnimations()
             tearDownActivationObserver()
             pinnedPid = nil
-            // Drop the NSWindow + content view so a later enable +
-            // show() rebuilds from scratch. See docstring above.
+            // Drop the NSWindow so a later enable + show() rebuilds from
+            // scratch. See docstring above.
             overlay?.close()
             overlay = nil
-            view = nil
         }
     }
 
@@ -461,7 +459,7 @@ public final class AgentCursor {
     /// Coordinates are screen points (top-left origin), matching what
     /// `AXUIElement`'s `AXPosition` attribute returns.
     public func setPosition(_ point: CGPoint) {
-        ensureView().setPosition(point)
+        AgentCursorRenderer.shared.setInitialPosition(point)
     }
 
     /// Animate the cursor to `point`, then suspend until the glide is
@@ -476,25 +474,20 @@ public final class AgentCursor {
         options: CursorMotionPath.Options? = nil
     ) async {
         guard isEnabled else { return }
-        let effectiveOptions = options ?? defaultMotionOptions
         let duration = duration ?? glideDurationSeconds
         cancelIdleHide()  // incoming activity — defer auto-hide
         show()  // ensure the overlay is visible; no-op if already shown
-        animate(to: point, duration: duration, options: effectiveOptions)
-        // Sleep the caller for the glide duration. Rotation settle
-        // continues after `duration` but the cursor has already
-        // arrived at the target by then; the caller is free to
-        // dispatch the AX action.
-        try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+        animate(to: point)
+        // Block until the cursor reaches the endpoint (spring begins).
+        // The actual click fires immediately after this returns, so the
+        // user sees the cursor land before the AX action dispatches.
+        await AgentCursorRenderer.shared.waitForArrival()
     }
 
-    /// Animate the cursor to `point` over `duration` seconds along a
-    /// cubic-Bezier arc. Pass `options: .default` for tuned defaults
-    /// or override the 5 knobs for custom motion.
-    ///
-    /// On arrival the rotation is settled via a spring animation
-    /// driven by the `spring` knob, so the cursor lands at its
-    /// resting tilt (-35°) with a damped overshoot.
+    /// Animate the cursor to `point` along a Dubins arc path. The
+    /// renderer computes the minimum-turning-radius arc from the current
+    /// position to `point` and integrates it forward with a speed
+    /// profile and spring settle.
     ///
     /// No-op when disabled.
     public func animate(
@@ -503,151 +496,23 @@ public final class AgentCursor {
         options: CursorMotionPath.Options? = nil
     ) {
         guard isEnabled else { return }
-        let options = options ?? defaultMotionOptions
-        let duration = duration ?? glideDurationSeconds
-        let view = ensureView()
-        let from = view.cursorLayer.position
-        let path = CursorMotionPath(from: from, to: point, options: options)
-
-        // Main glide along the Bezier.
-        let glide = path.positionAnimation(duration: duration)
-        view.cursorLayer.add(glide, forKey: "glide")
-        view.setPosition(point)
-
-        // Bloom breath — while the cursor is gliding, pulse the
-        // radial bloom's center alpha up and back so the halo feels
-        // "alive" during agent action and subtle when at rest. The
-        // envelope matches the glide duration exactly so the halo
-        // resolves to its resting alpha as the cursor lands.
-        playBloomBreath(bloomLayer: view.bloomLayer, duration: duration)
-
-        // Note: no rotation. Previous builds rotated the cursor to
-        // match the motion tangent on arrival; the SVG pointer path
-        // already has the tip at upper-left and the ring-ripple on
-        // click-landing carries the arrival-beat visual.
+        _ = ensureWindow()
+        // Always arrive pointing upper-left (45°), approaching from the
+        // lower-right — matches the macOS system-cursor convention and
+        // gives every click a consistent visual signature regardless of
+        // where the cursor started.
+        AgentCursorRenderer.shared.moveTo(point: point, endAngleDegrees: 45.0)
     }
 
-    /// Pulse the bloom's center-stop alpha up to
-    /// `AgentCursorStyle.bloomBreathPeak` and back over `duration`,
-    /// giving the halo a "breath" during a glide. Animates the
-    /// gradient layer's `colors` array (three NSColor stops with
-    /// matching alphas) so only the center stop's alpha varies — the
-    /// falloff shape stays constant. `isRemovedOnCompletion = true`
-    /// restores the static colors at the end.
-    private func playBloomBreath(bloomLayer: CAGradientLayer, duration: CFTimeInterval) {
-        let style = AgentCursorStyle.default
-        let bloom = style.bloomColor
-        let mid = bloom.withAlphaComponent(style.bloomMidAlpha).cgColor
-        let edge = bloom.withAlphaComponent(0.0).cgColor
-        let rest: [CGColor] = [
-            bloom.withAlphaComponent(style.bloomCenterAlpha).cgColor, mid, edge,
-        ]
-        let peak: [CGColor] = [
-            bloom.withAlphaComponent(style.bloomBreathPeak).cgColor, mid, edge,
-        ]
-        let anim = CAKeyframeAnimation(keyPath: "colors")
-        anim.values = [rest, peak, rest]
-        anim.keyTimes = [0.0, 0.5, 1.0]
-        anim.duration = duration
-        anim.timingFunctions = [
-            CAMediaTimingFunction(name: .easeInEaseOut),
-            CAMediaTimingFunction(name: .easeInEaseOut),
-        ]
-        anim.isRemovedOnCompletion = true
-        bloomLayer.add(anim, forKey: "bloomBreath")
-    }
-
-    /// Emit a ring-ripple centered on the cursor's tip — a circle
-    /// that starts small and opaque, expands outward while fading,
-    /// and removes itself when done. Fires right after the AX action
-    /// so the viewer sees "something landed here" without the cursor
-    /// itself moving or rotating.
+    /// Post-click visual beat. Suspends the caller for `duration` so the
+    /// cursor visibly rests on the target before the next action fires.
+    /// A future iteration can add a SwiftUI ripple drawn in
+    /// `AgentCursorView`; for now the dwell time alone is sufficient.
     ///
-    /// Implemented as a short-lived `CAShapeLayer` added as a child
-    /// of the cursor container. Because the container's anchor is at
-    /// the tip, adding the ripple centered on the anchor auto-aligns
-    /// it with the click point. Layer is removed after the animation
-    /// so repeated clicks don't accumulate dead sublayers.
-    ///
-    /// No-op when disabled. Caller awaits the full duration so the
-    /// ripple visibly completes before the dwell starts.
+    /// No-op when disabled.
     public func playClickPress(duration: CFTimeInterval = 0.65) async {
-        guard isEnabled, let cursorLayer = view?.cursorLayer else { return }
-
-        // Center all rings on the cursor's tip. The container's
-        // anchor encodes the tip in normalized (0–1) coords; scale
-        // to container-local to place the rings.
-        let anchor = cursorLayer.anchorPoint
-        let size = cursorLayer.bounds.size
-        let tip = CGPoint(x: anchor.x * size.width, y: anchor.y * size.height)
-
-        // Three concentric rings expanding outward together. Innermost
-        // is the brightest + smallest; each successive ring is larger
-        // and more transparent — a ripple "stack" that reads as
-        // radiating presence rather than a single flashbulb. Each
-        // ring still uses the same scale curve so they stay
-        // proportional as they grow.
-        struct Ring {
-            let startDiameter: CGFloat
-            let peakAlpha: Double
-        }
-        let rings: [Ring] = [
-            Ring(startDiameter: 6,  peakAlpha: 0.30),  // inner
-            Ring(startDiameter: 10, peakAlpha: 0.12),  // outer — ghost
-        ]
-        let endScale: CGFloat = 1.8
-
-        // Collect the layers so we can tear them down cleanly below.
-        var rippleLayers: [CAShapeLayer] = []
-
-        for ring in rings {
-            let layer = CAShapeLayer()
-            let rect = CGRect(
-                origin: .zero,
-                size: CGSize(width: ring.startDiameter, height: ring.startDiameter)
-            )
-            layer.path = CGPath(ellipseIn: rect, transform: nil)
-            layer.fillColor = NSColor.clear.cgColor
-            layer.strokeColor = NSColor.white.withAlphaComponent(ring.peakAlpha).cgColor
-            layer.lineWidth = 0.8
-            layer.frame = CGRect(
-                x: tip.x - ring.startDiameter / 2,
-                y: tip.y - ring.startDiameter / 2,
-                width: ring.startDiameter,
-                height: ring.startDiameter
-            )
-            layer.opacity = 0  // starts invisible; opacity keyframe ramps in
-            cursorLayer.addSublayer(layer)
-            rippleLayers.append(layer)
-
-            // Scale is identical across rings so they stay concentric as
-            // they grow. Ease-out curve punches outward and settles.
-            let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
-            scaleAnim.fromValue = 0.7
-            scaleAnim.toValue = endScale
-            scaleAnim.timingFunction = CAMediaTimingFunction(
-                controlPoints: 0.16, 1, 0.3, 1)
-            scaleAnim.duration = duration
-
-            // Peak is 1.0 here — the real peak alpha is baked into
-            // `strokeColor`'s alpha. This keyframe just ramps the ring
-            // in briefly then fades over a long tail.
-            let opacityAnim = CAKeyframeAnimation(keyPath: "opacity")
-            opacityAnim.values = [0.0, 1.0, 0.0]
-            opacityAnim.keyTimes = [0.0, 0.1, 1.0]
-            opacityAnim.duration = duration
-
-            let group = CAAnimationGroup()
-            group.animations = [scaleAnim, opacityAnim]
-            group.duration = duration
-            group.isRemovedOnCompletion = true
-            layer.add(group, forKey: "ripple")
-        }
-
+        guard isEnabled else { return }
         try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
-        for layer in rippleLayers {
-            layer.removeFromSuperlayer()
-        }
     }
 
     /// Mark the "click landed" moment — pauses the caller for the
@@ -687,7 +552,6 @@ public final class AgentCursor {
         cancelIdleHide()
         overlay?.orderOut(nil)
         overlay = nil
-        view = nil
     }
 
     // MARK: - Private
@@ -718,15 +582,9 @@ public final class AgentCursor {
     private func ensureWindow() -> AgentCursorOverlayWindow {
         if let overlay { return overlay }
         let win = AgentCursorOverlayWindow()
-        let view = AgentCursorView(frame: win.frame)
-        win.contentView = view
+        let hostView = NSHostingView(rootView: AgentCursorView())
+        win.contentView = hostView
         self.overlay = win
-        self.view = view
         return win
-    }
-
-    private func ensureView() -> AgentCursorView {
-        _ = ensureWindow()
-        return view!  // set by ensureWindow's side effect
     }
 }
