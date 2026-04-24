@@ -1,3 +1,5 @@
+import AppKit
+import ApplicationServices
 import CoreGraphics
 import CuaDriverCore
 import Foundation
@@ -8,12 +10,20 @@ public enum SetValueTool {
         tool: Tool(
             name: "set_value",
             description: """
-                Directly set an element's AXValue attribute. For controls like sliders,
-                steppers, and text fields that expose a settable value. Accepts a string
-                (which the target element will coerce as needed).
+                Set a value on a UI element. Two modes depending on element role:
 
-                For free-form text entry, prefer `type_text_in` — it inserts at the
-                cursor rather than replacing the whole value.
+                - **AXPopUpButton / select dropdown**: finds the child option whose
+                  title or value matches `value` (case-insensitive) and AXPresses it
+                  directly — the native macOS popup menu is never opened, so focus
+                  is never stolen. Use this for HTML <select> elements in Safari or
+                  any native NSPopUpButton. Pass the option's display label as `value`
+                  (e.g. "Blue", not "blue").
+
+                - **All other elements**: writes `AXValue` directly (sliders, steppers,
+                  date pickers, native text fields that expose settable AXValue).
+
+                For free-form text entry into web inputs, prefer `type_text_chars`
+                which synthesises key events — AXValue writes are ignored by WebKit.
                 """,
             inputSchema: [
                 "type": "object",
@@ -68,6 +78,27 @@ public enum SetValueTool {
                     windowId: windowId,
                     elementIndex: index
                 )
+                let target = AXInput.describe(element)
+
+                // ── AXPopUpButton (HTML <select>) special path ──────────
+                // Safari WebKit does not propagate AXValue writes back to
+                // the HTML DOM for <select> elements — the AX write returns
+                // success but the JS `element.value` remains unchanged.
+                // Instead, iterate the AX children (the option items) and
+                // AXPress the one whose AXTitle or AXValue matches `value`.
+                // This bypasses the native macOS popup menu entirely, so the
+                // option is selected without the menu needing to be visible.
+                if target.role == "AXPopUpButton" {
+                    return try await selectPopupOption(
+                        element: element,
+                        index: index,
+                        pid: pid,
+                        value: value,
+                        elementTitle: target.title ?? ""
+                    )
+                }
+
+                // ── Default path: write AXValue directly ────────────────
                 try await AppStateRegistry.focusGuard.withFocusSuppressed(
                     pid: pid,
                     element: element
@@ -78,7 +109,6 @@ public enum SetValueTool {
                         value: value as CFTypeRef
                     )
                 }
-                let target = AXInput.describe(element)
                 let summary =
                     "✅ Set AXValue on [\(index)] \(target.role ?? "?") \"\(target.title ?? "")\"."
                 return CallTool.Result(
@@ -93,6 +123,156 @@ public enum SetValueTool {
             }
         }
     )
+
+    /// Select a specific option in an AXPopUpButton.
+    ///
+    /// Strategy (in order):
+    /// 1. AX children — works for native AppKit NSPopUpButton where the option
+    ///    elements are AXMenuItem children of the button even when the popup is closed.
+    /// 2. JavaScript injection via `osascript` — used when the target is Safari/WebKit,
+    ///    whose `<select>` elements expose no AX children without the popup open. Finds
+    ///    the matching `<option>` by text or value and sets it via the DOM, dispatching
+    ///    a `change` event. No focus steal — osascript's `do JavaScript` runs against
+    ///    whichever Safari document is frontmost in the process, regardless of focus.
+    private static func selectPopupOption(
+        element: AXUIElement,
+        index: Int,
+        pid: Int32,
+        value: String,
+        elementTitle: String
+    ) async throws -> CallTool.Result {
+        // ── Strategy 1: AX children (native AppKit popup buttons) ──────────
+        let children = AXInput.children(of: element)
+        if !children.isEmpty {
+            let valueLower = value.lowercased()
+            var matchedIndex = -1
+            var availableTitles: [String] = []
+            for (i, child) in children.enumerated() {
+                let childTitle = AXInput.stringAttribute("AXTitle", of: child) ?? ""
+                let childValue = AXInput.stringAttribute("AXValue", of: child) ?? ""
+                availableTitles.append(childTitle)
+                if childTitle.lowercased() == valueLower
+                    || childValue.lowercased() == valueLower
+                {
+                    matchedIndex = i
+                    break
+                }
+            }
+            if matchedIndex >= 0 {
+                let option = children[matchedIndex]
+                try await AppStateRegistry.focusGuard.withFocusSuppressed(
+                    pid: pid,
+                    element: option
+                ) {
+                    try AXInput.performAction("AXPress", on: option)
+                }
+                let optTitle = AXInput.stringAttribute("AXTitle", of: option) ?? value
+                return CallTool.Result(
+                    content: [.text(
+                        text: "✅ Selected '\(optTitle)' in AXPopUpButton [\(index)] "
+                            + "\"\(elementTitle)\" via AX child AXPress.",
+                        annotations: nil,
+                        _meta: nil
+                    )]
+                )
+            }
+            let avail = availableTitles.map { "\"\($0)\"" }.joined(separator: ", ")
+            return CallTool.Result(
+                content: [.text(
+                    text: "❌ No AX child matching '\(value)' in AXPopUpButton [\(index)] "
+                        + "\"\(elementTitle)\". Available: [\(avail)].",
+                    annotations: nil,
+                    _meta: nil
+                )],
+                isError: true
+            )
+        }
+
+        // ── Strategy 2: JavaScript injection via osascript (Safari/WebKit) ──
+        // WebKit-backed <select> elements expose no AX children when the popup
+        // is closed. Fall back to running JavaScript in the Safari document.
+        let appName = NSRunningApplication(processIdentifier: pid)?.localizedName ?? ""
+        guard appName == "Safari" else {
+            return CallTool.Result(
+                content: [.text(
+                    text: "❌ AXPopUpButton [\(index)] '\(elementTitle)' has no AX children and "
+                        + "target is '\(appName)' (not Safari) — no fallback available.",
+                    annotations: nil,
+                    _meta: nil
+                )],
+                isError: true
+            )
+        }
+        return await setSelectViaJS(index: index, elementTitle: elementTitle, value: value)
+    }
+
+    /// Set an HTML <select> element's value in Safari via `osascript do JavaScript`.
+    /// Searches all <select> elements for an <option> whose text or value matches
+    /// `value` (case-insensitive), then sets it and dispatches a `change` event.
+    private static func setSelectViaJS(
+        index: Int,
+        elementTitle: String,
+        value: String
+    ) async -> CallTool.Result {
+        // Condense JS to a single line to embed safely in AppleScript.
+        // Uses single quotes throughout so it embeds cleanly in the
+        // AppleScript double-quoted `do JavaScript "..."` argument.
+        // The value is lowercased and sanitised so single quotes in it
+        // don't break the JS string literal.
+        let vLow = value.lowercased().replacingOccurrences(of: "'", with: "\\'")
+        let js =
+            "(function(){" +
+            "var ss=document.querySelectorAll('select'),opts=[];" +
+            "for(var i=0;i<ss.length;i++){" +
+            "for(var j=0;j<ss[i].options.length;j++){" +
+            "var t=ss[i].options[j].text.toLowerCase()," +
+            "v=ss[i].options[j].value.toLowerCase();" +
+            "opts.push(t+'|'+v);" +
+            "if(t==='\(vLow)'||v==='\(vLow)'){" +
+            "ss[i].value=ss[i].options[j].value;" +
+            "ss[i].dispatchEvent(new Event('change',{bubbles:true}));" +
+            "return 'SET:'+ss[i].value;}}" +
+            "}return 'NOTFOUND:'+opts.join(',');" +
+            "})()"
+
+        let appleScript = "tell application \"Safari\" to do JavaScript \"\(js)\" in front document"
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", appleScript]
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return errorResult("osascript launch failed: \(error)")
+        }
+        let raw = (String(
+            data: outPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if raw.hasPrefix("SET:") {
+            let domVal = String(raw.dropFirst(4))
+            return CallTool.Result(
+                content: [.text(
+                    text: "✅ Set select [\(index)] '\(elementTitle)' to '\(value)' via "
+                        + "Safari JavaScript (DOM value: \"\(domVal)\").",
+                    annotations: nil,
+                    _meta: nil
+                )]
+            )
+        }
+        if raw.hasPrefix("NOTFOUND:") {
+            let available = String(raw.dropFirst(9))
+            return errorResult(
+                "No <option> matching '\(value)' found in any <select>. "
+                + "Available (text|value): \(available)"
+            )
+        }
+        return errorResult("JavaScript returned unexpected output: \(raw.prefix(200))")
+    }
 
     private static func isWindowMinimized(pid: Int32) -> Bool {
         guard let onScreen = CGWindowListCopyWindowInfo(
