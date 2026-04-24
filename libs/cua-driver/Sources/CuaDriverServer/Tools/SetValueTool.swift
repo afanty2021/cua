@@ -214,21 +214,28 @@ public enum SetValueTool {
         elementTitle: String,
         value: String
     ) async -> CallTool.Result {
-        // Condense JS to a single line to embed safely in AppleScript.
-        // Uses single quotes throughout so it embeds cleanly in the
-        // AppleScript double-quoted `do JavaScript "..."` argument.
-        // The value is lowercased and sanitised so single quotes in it
-        // don't break the JS string literal.
-        let vLow = value.lowercased().replacingOccurrences(of: "'", with: "\\'")
+        // Percent-encode the (lowercased) value using only unreserved
+        // URL characters as the allowed set. This means every special
+        // character — including single quotes, double quotes, backslashes,
+        // and percent signs — is encoded as %XX, which is safe to embed
+        // in both a JS single-quoted string (via decodeURIComponent) and
+        // an AppleScript double-quoted string without any additional
+        // escaping. No double-escape arithmetic needed.
+        var unreserved = CharacterSet.alphanumerics
+        unreserved.insert(charactersIn: "-._~")
+        let vLow = value.lowercased()
+        let vEncoded = vLow.addingPercentEncoding(withAllowedCharacters: unreserved) ?? vLow
+
         let js =
             "(function(){" +
+            "var v=decodeURIComponent('\(vEncoded)');" +
             "var ss=document.querySelectorAll('select'),opts=[];" +
             "for(var i=0;i<ss.length;i++){" +
             "for(var j=0;j<ss[i].options.length;j++){" +
             "var t=ss[i].options[j].text.toLowerCase()," +
-            "v=ss[i].options[j].value.toLowerCase();" +
-            "opts.push(t+'|'+v);" +
-            "if(t==='\(vLow)'||v==='\(vLow)'){" +
+            "u=ss[i].options[j].value.toLowerCase();" +
+            "opts.push(t+'|'+u);" +
+            "if(t===v||u===v){" +
             "ss[i].value=ss[i].options[j].value;" +
             "ss[i].dispatchEvent(new Event('change',{bubbles:true}));" +
             "return 'SET:'+ss[i].value;}}" +
@@ -244,9 +251,21 @@ public enum SetValueTool {
         proc.standardError = Pipe()
         do {
             try proc.run()
-            proc.waitUntilExit()
         } catch {
             return errorResult("osascript launch failed: \(error)")
+        }
+        // Wait for osascript with a 10-second deadline. A stuck Safari
+        // permission prompt or unresponsive renderer can cause
+        // waitUntilExit() to block indefinitely, which would stall
+        // the MCP tool handler permanently. Poll on 50 ms ticks so we
+        // stay in the async/Swift concurrency cooperative pool.
+        let deadline = Date().addingTimeInterval(10.0)
+        while proc.isRunning && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if proc.isRunning {
+            proc.terminate()
+            return errorResult("osascript timed out after 10 seconds")
         }
         let raw = (String(
             data: outPipe.fileHandleForReading.readDataToEndOfFile(),

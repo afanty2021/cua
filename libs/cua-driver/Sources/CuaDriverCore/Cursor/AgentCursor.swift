@@ -446,6 +446,7 @@ public final class AgentCursor {
         missedPinCount = 0
         continuousRepinTask?.cancel()
         continuousRepinTask = nil
+        clearFocusRect()
     }
 
     /// Move the cursor immediately to a screen-point coordinate. No

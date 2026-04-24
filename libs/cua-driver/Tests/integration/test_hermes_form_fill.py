@@ -58,7 +58,11 @@ _FIELD_LOSS_FILE = "/tmp/focus_monitor_field_losses.txt"
 
 _HERMES_BIN = os.path.expanduser("~/.hermes/hermes-agent/venv/bin/hermes")
 
-_ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
+# Deferred at module level — not evaluated until setUpClass runs. This
+# avoids a KeyError during pytest --collect-only / IDE test discovery /
+# lint passes that merely import the module without supplying the key.
+# Each test class's setUpClass skips the entire suite when the key is absent.
+_ANTHROPIC_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
 
 # Use haiku for speed/cost; override with HERMES_TEST_MODEL for a stronger model.
 _MODEL = os.environ.get("HERMES_TEST_MODEL", "claude-haiku-4-5-20251001")
@@ -149,6 +153,11 @@ class _HermesFormBase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        if not _ANTHROPIC_KEY:
+            raise unittest.SkipTest(
+                "ANTHROPIC_API_KEY is not set — skipping hermes form-fill tests"
+            )
+
         for f in (_LOSS_FILE, _KEY_LOSS_FILE, _FIELD_LOSS_FILE):
             if os.path.exists(f):
                 os.remove(f)

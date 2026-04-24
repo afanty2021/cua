@@ -1,6 +1,6 @@
 /// FocusMonitorApp — counts how many times it loses focus.
 ///
-/// Tracks two kinds of focus loss:
+/// Tracks three kinds of focus loss:
 ///
 /// 1. **App-level** (NSApplication.didResignActiveNotification): the whole
 ///    app loses the system focus token. Written to /tmp/focus_monitor_losses.txt.
@@ -8,6 +8,11 @@
 /// 2. **Window/keyboard-level** (NSWindow.didResignKeyNotification): the window
 ///    loses key status (another window, including a background Safari window,
 ///    becomes key). Written to /tmp/focus_monitor_key_losses.txt.
+///
+/// 3. **Text-field first-responder** (TrackingTextField.resignFirstResponder):
+///    the editable NSTextField loses first-responder status, meaning another
+///    app or window captured keyboard input. Written to
+///    /tmp/focus_monitor_field_losses.txt.
 ///
 /// A visible editable NSTextField is created in the window and made first
 /// responder immediately, so keyboard input goes to it by default. Agents
