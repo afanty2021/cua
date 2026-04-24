@@ -147,8 +147,8 @@ class CloudTransport(Transport):
         # Run VM status polling, endpoint resolution, and server probe in
         # parallel.  As soon as the API returns a direct-IP endpoint (even
         # while CRD status is still "creating"), start TCP-probing the CUA
-        # server.  This overlaps the kopf handler's credential injection
-        # and DNS setup with the CUA server boot.
+        # server.  This overlaps the shim's credential injection and DNS
+        # setup with the CUA server boot.
 
         probe_task: Optional[asyncio.Task] = None
         resolved_url: Optional[str] = None
@@ -235,8 +235,8 @@ class CloudTransport(Transport):
         """Wait for snapshot to be ready.
 
         The API's snapshot endpoint is now synchronous — it blocks until the
-        Kopf operator finishes the snapshot.  This method is kept as a no-op
-        for compatibility.
+        shim finishes the snapshot.  This method is kept as a no-op for
+        compatibility.
         """
         return
 
