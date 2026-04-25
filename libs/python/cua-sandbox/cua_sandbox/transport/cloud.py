@@ -386,6 +386,8 @@ class CloudTransport(Transport):
             resp = await self._api_client.post(path, json=body)
             if resp.status_code != 503:
                 return resp
+            if attempt == _CREATE_MAX_RETRIES - 1:
+                break
             delay = _CREATE_RETRY_BASE_S * (2 ** attempt)
             logger.warning(
                 "No sandbox capacity (503), retrying in %.1fs (attempt %d/%d)",
