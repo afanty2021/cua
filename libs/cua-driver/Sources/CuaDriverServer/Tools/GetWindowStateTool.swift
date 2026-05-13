@@ -294,6 +294,12 @@ public enum GetWindowStateTool {
                             work as usual. To suppress future capture attempts on \
                             this app: `cua-driver config set capture_mode ax`.
                             """
+                    } catch {
+                        // Screenshot unavailable — window may be off-Space,
+                        // hidden, or otherwise not capturable via
+                        // ScreenCaptureKit. The AX tree is still valid;
+                        // emit a screenshot-less response so the caller
+                        // can still use element-indexed actions.
                     }
                 }
 

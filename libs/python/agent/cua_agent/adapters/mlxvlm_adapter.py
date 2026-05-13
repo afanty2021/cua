@@ -270,7 +270,7 @@ class MLXVLMAdapter(CustomLLM):
             tokenizer = cast(PreTrainedTokenizer, processor)
 
             # Generate response
-            text_content, usage = generate(
+            generation_result = generate(
                 model,
                 tokenizer,
                 str(prompt),
@@ -278,6 +278,9 @@ class MLXVLMAdapter(CustomLLM):
                 verbose=False,
                 max_tokens=max_tokens,
             )
+
+            # Extract text from GenerationResult object
+            text_content = generation_result.text
 
         except Exception as e:
             raise RuntimeError(f"Error generating response: {str(e)}") from e
@@ -303,8 +306,14 @@ class MLXVLMAdapter(CustomLLM):
         """
         generated_text = self._generate(**kwargs)
 
+        # Extract model name for liteLLM
+        model_param = kwargs.get('model', 'mlx-community/UI-TARS-1.5-7B-4bit')
+        # Remove leading slash if present to avoid double slashes
+        if model_param.startswith('/'):
+            model_param = model_param[1:]
+
         result = completion(
-            model=f"mlx/{kwargs.get('model', 'mlx-community/UI-TARS-1.5-7B-4bit')}",
+            model=f"mlx/{model_param}",
             mock_response=generated_text,
         )
         return cast(ModelResponse, result)
@@ -321,8 +330,14 @@ class MLXVLMAdapter(CustomLLM):
             self._executor, functools.partial(self._generate, **kwargs)
         )
 
+        # Extract model name for liteLLM
+        model_param = kwargs.get('model', 'mlx-community/UI-TARS-1.5-7B-4bit')
+        # Remove leading slash if present to avoid double slashes
+        if model_param.startswith('/'):
+            model_param = model_param[1:]
+
         result = await acompletion(
-            model=f"mlx/{kwargs.get('model', 'mlx-community/UI-TARS-1.5-7B-4bit')}",
+            model=f"mlx/{model_param}",
             mock_response=generated_text,
         )
         return cast(ModelResponse, result)
